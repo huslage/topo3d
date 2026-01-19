@@ -1,0 +1,11 @@
+Flask==3.0.0
+Flask-CORS==4.0.0
+numpy==1.26.2
+numpy-stl==3.1.1
+gpxpy==1.6.2
+requests==2.31.0
+Pillow==10.1.0
+scipy==1.11.4
+overpy==0.7
+srtm.py==0.3.7
+geopy==2.4.1

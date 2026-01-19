@@ -1,0 +1,1816 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Topo3D - Topographical 3D Model Generator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+
+        header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .main-grid {
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            gap: 20px;
+            height: calc(100vh - 200px);
+        }
+
+        .sidebar {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            overflow-y: auto;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .viewer-container {
+            background: #1a1a1a;
+            border-radius: 12px;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+        }
+
+        .section {
+            margin-bottom: 25px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .section:last-child {
+            border-bottom: none;
+        }
+
+        .section h3 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 1.1em;
+        }
+
+        .file-upload {
+            position: relative;
+            display: inline-block;
+            width: 100%;
+        }
+
+        .file-upload input[type="file"] {
+            display: none;
+        }
+
+        .file-upload-label {
+            display: block;
+            padding: 12px 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-align: center;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: transform 0.2s;
+            font-weight: 500;
+        }
+
+        .file-upload-label:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .file-name {
+            margin-top: 8px;
+            font-size: 0.9em;
+            color: #666;
+            font-style: italic;
+        }
+
+        input[type="text"], input[type="number"] {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 0.95em;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus, input[type="number"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .checkbox-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .checkbox-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .checkbox-item input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+
+        .checkbox-item label {
+            cursor: pointer;
+            user-select: none;
+        }
+
+        button {
+            width: 100%;
+            padding: 12px 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1em;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-top: 10px;
+        }
+
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        button.secondary {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+
+        button.success {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        }
+
+        .object-list {
+            max-height: 200px;
+            overflow-y: auto;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 10px;
+        }
+
+        .object-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px;
+            margin-bottom: 5px;
+            background: #f5f5f5;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .object-item:hover {
+            background: #e0e0e0;
+        }
+
+        .object-item.selected {
+            background: #667eea;
+            color: white;
+        }
+
+        .object-item button {
+            padding: 4px 12px;
+            font-size: 0.85em;
+            margin: 0;
+            width: auto;
+        }
+
+        .status {
+            padding: 12px;
+            border-radius: 6px;
+            margin-top: 10px;
+            font-size: 0.9em;
+        }
+
+        .status.info {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+
+        .status.success {
+            background: #e8f5e9;
+            color: #388e3c;
+        }
+
+        .status.error {
+            background: #ffebee;
+            color: #d32f2f;
+        }
+
+        .loading {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 20px 40px;
+            border-radius: 8px;
+            z-index: 1000;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            border: 3px solid rgba(255,255,255,0.3);
+            border-top: 3px solid white;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .controls-overlay {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 0.9em;
+        }
+
+        .controls-overlay h4 {
+            margin-bottom: 8px;
+        }
+
+        .controls-overlay p {
+            margin: 4px 0;
+        }
+
+        .label-input-group {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .label-input-group input {
+            flex: 1;
+        }
+
+        .label-input-group button {
+            width: auto;
+            margin: 0;
+            padding: 10px 20px;
+        }
+
+        .slider-group {
+            margin: 15px 0;
+        }
+
+        .slider-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 0.9em;
+            color: #666;
+        }
+
+        .slider-group input[type="range"] {
+            width: 100%;
+        }
+
+        .slider-value {
+            display: inline-block;
+            margin-left: 10px;
+            font-weight: 600;
+            color: #667eea;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🏔️ Topo3D</h1>
+            <p>Create 3D Printable Topographical Models</p>
+        </header>
+
+        <div class="main-grid">
+            <!-- Sidebar -->
+            <div class="sidebar">
+                <!-- File Upload -->
+                <div class="section">
+                    <h3>📁 Upload GPX File</h3>
+                    <div class="file-upload">
+                        <input type="file" id="gpx-file" accept=".gpx">
+                        <label for="gpx-file" class="file-upload-label">Choose GPX File</label>
+                        <div class="file-name" id="file-name">No file selected</div>
+                    </div>
+                </div>
+
+                <!-- Address Input -->
+                <div class="section">
+                    <h3>📍 Highlight Address</h3>
+                    <input type="text" id="address-input" placeholder="Paste Google Maps URL or enter address">
+                    <button id="geocode-btn" onclick="geocodeAddress()">Find Location</button>
+                    <div class="checkbox-item" style="margin-top: 10px;">
+                        <input type="checkbox" id="show-only-address-building" disabled>
+                        <label for="show-only-address-building">Show only address building (red)</label>
+                    </div>
+                    <p id="address-status" style="font-size: 0.85em; color: #666; margin-top: 5px;"></p>
+                </div>
+
+                <!-- Map Features -->
+                <div class="section">
+                    <h3>🗺️ Map Features</h3>
+                    <div class="checkbox-group">
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="feature-roads" checked>
+                            <label for="feature-roads">Roads</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="feature-water" checked>
+                            <label for="feature-water">Water Bodies</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="feature-buildings" checked>
+                            <label for="feature-buildings">Buildings</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="feature-railways">
+                            <label for="feature-railways">Railways</label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Model Options -->
+                <div class="section">
+                    <h3>⚙️ Model Options</h3>
+                    <div class="slider-group">
+                        <label>
+                            Vertical Scale: <span class="slider-value" id="vertical-scale-value">1.0</span>x
+                        </label>
+                        <input type="range" id="vertical-scale" min="0.5" max="3" step="0.1" value="1.0" oninput="updateSliderValue('vertical-scale')">
+                    </div>
+                    <div class="slider-group">
+                        <label>
+                            Model Width: <span class="slider-value" id="model-width-value">200</span>mm
+                        </label>
+                        <input type="range" id="model-width" min="50" max="500" step="10" value="200" oninput="updateSliderValue('model-width')">
+                    </div>
+                    <div class="slider-group">
+                        <label>
+                            Base Height: <span class="slider-value" id="base-height-value">10</span>mm
+                        </label>
+                        <input type="range" id="base-height" min="0" max="50" step="1" value="10" oninput="updateSliderValue('base-height')">
+                    </div>
+                    <div class="slider-group">
+                        <label>
+                            Boundary Padding: <span class="slider-value" id="boundary-padding-value">100</span>m
+                        </label>
+                        <input type="range" id="boundary-padding" min="0" max="200" step="10" value="100" oninput="updateSliderValue('boundary-padding')">
+                        <small style="color: #888; font-size: 11px;">Extra space around GPX track</small>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="include-base" checked>
+                        <label for="include-base">Include Base (for 3D printing)</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="circular-model">
+                        <label for="circular-model">Circular Model</label>
+                    </div>
+                </div>
+
+                <!-- Generate -->
+                <div class="section">
+                    <h3>🚀 Generate Model</h3>
+                    <button onclick="generateModel()" class="success">Generate 3D Model</button>
+                    <button onclick="export3MF()" class="secondary">Export to 3MF</button>
+                </div>
+
+                <!-- Object List -->
+                <div class="section">
+                    <h3>🎯 Objects</h3>
+                    <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+                        <button onclick="selectAllObjects()" style="flex: 1; font-size: 0.85em; padding: 6px;">Select All</button>
+                        <button onclick="deselectAllObjects()" style="flex: 1; font-size: 0.85em; padding: 6px;">Deselect</button>
+                        <button onclick="deleteSelectedObjects()" class="secondary" style="flex: 1; font-size: 0.85em; padding: 6px;">Delete Selected</button>
+                    </div>
+                    <div class="object-list" id="object-list">
+                        <p style="color: #999; text-align: center;">No objects yet</p>
+                    </div>
+                    <p id="selection-count" style="font-size: 0.85em; color: #666; margin-top: 5px;"></p>
+                </div>
+
+                <!-- Labels -->
+                <div class="section">
+                    <h3>🏷️ Add Label</h3>
+                    <div class="label-input-group">
+                        <input type="text" id="label-text" placeholder="Label text">
+                        <button onclick="addLabel()">Add</button>
+                    </div>
+                </div>
+
+                <!-- Status -->
+                <div id="status-message"></div>
+            </div>
+
+            <!-- 3D Viewer -->
+            <div class="viewer-container">
+                <div id="canvas-container"></div>
+                <div id="selection-box" style="position: absolute; border: 2px dashed #ffff00; background: rgba(255, 255, 0, 0.1); pointer-events: none; display: none;"></div>
+                <div class="loading" id="loading">
+                    <div class="spinner"></div>
+                    <p>Processing...</p>
+                </div>
+                <div class="controls-overlay">
+                    <h4>🎮 Controls</h4>
+                    <p><strong>Rotate:</strong> Left drag</p>
+                    <p><strong>Pan:</strong> Right drag</p>
+                    <p><strong>Zoom:</strong> Scroll</p>
+                    <p><strong>Select:</strong> Shift+click</p>
+                    <p><strong>Box select:</strong> Shift+drag</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script>
+        // Global state
+        let scene, camera, renderer, controls;
+        let gpxData = null;
+        let originalBounds = null;  // Store original GPX bounds before padding
+        let elevationData = null;
+        let osmFeatures = null;
+        let currentMesh = null;
+        let selectedObjects = new Set();  // Multiple selection support
+        let objectsList = [];
+
+        // Selection in 3D view
+        let raycaster = new THREE.Raycaster();
+        let mouse = new THREE.Vector2();
+        let isBoxSelecting = false;
+        let boxSelectStart = { x: 0, y: 0 };
+        let selectionBox = null;
+
+        // Calculate padded bounds based on slider value
+        function getPaddedBounds(bounds) {
+            if (!bounds) return null;
+            const paddingMeters = parseFloat(document.getElementById('boundary-padding').value) || 0;
+            // Convert meters to degrees (approximate)
+            // 1 degree latitude ≈ 111,000 meters
+            const avgLat = (bounds.north + bounds.south) / 2;
+            const latPadding = paddingMeters / 111000;
+            const lonPadding = paddingMeters / (111000 * Math.cos(avgLat * Math.PI / 180));
+
+            return {
+                north: bounds.north + latPadding,
+                south: bounds.south - latPadding,
+                east: bounds.east + lonPadding,
+                west: bounds.west - lonPadding
+            };
+        }
+
+        // Expand bounds to a square for circular model
+        // The square must be large enough that an inscribed circle contains all original rectangular data
+        function getSquareBoundsForCircle(bounds) {
+            if (!bounds) return null;
+
+            const avgLat = (bounds.north + bounds.south) / 2;
+            const lonScale = Math.cos(avgLat * Math.PI / 180);
+
+            // Convert bounds to approximate meters for calculation
+            const latRangeMeters = (bounds.north - bounds.south) * 111000;
+            const lonRangeMeters = (bounds.east - bounds.west) * 111000 * lonScale;
+
+            // The circle that contains the entire rectangle has diameter = diagonal
+            const diagonal = Math.sqrt(latRangeMeters * latRangeMeters + lonRangeMeters * lonRangeMeters);
+
+            // We need a square with side = diagonal so the inscribed circle contains all data
+            const squareSide = diagonal;
+
+            // Calculate center of original bounds
+            const centerLat = (bounds.north + bounds.south) / 2;
+            const centerLon = (bounds.east + bounds.west) / 2;
+
+            // Convert square side back to degrees
+            const halfSideLat = (squareSide / 2) / 111000;
+            const halfSideLon = (squareSide / 2) / (111000 * lonScale);
+
+            return {
+                north: centerLat + halfSideLat,
+                south: centerLat - halfSideLat,
+                east: centerLon + halfSideLon,
+                west: centerLon - halfSideLon
+            };
+        }
+
+        // Initialize Three.js scene
+        function initScene() {
+            const container = document.getElementById('canvas-container');
+
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a1a);
+            scene.fog = new THREE.Fog(0x1a1a1a, 500, 2000);
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(
+                60,
+                container.clientWidth / container.clientHeight,
+                0.1,
+                5000
+            );
+            camera.position.set(200, 200, 200);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.shadowMap.enabled = true;
+            container.appendChild(renderer.domElement);
+
+            // Controls
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+
+            // Lights
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(200, 500, 100);
+            directionalLight.castShadow = true;
+            scene.add(directionalLight);
+
+            // Grid
+            const gridHelper = new THREE.GridHelper(1000, 50, 0x444444, 0x222222);
+            scene.add(gridHelper);
+
+            // Handle window resize
+            window.addEventListener('resize', onWindowResize);
+
+            // Selection event handlers
+            selectionBox = document.getElementById('selection-box');
+
+            // Use pointerdown/move/up for better compatibility
+            // Add to document to ensure we catch events even if OrbitControls intercepts
+            document.addEventListener('pointerdown', onMouseDown, true);
+            document.addEventListener('pointermove', onMouseMove, true);
+            document.addEventListener('pointerup', onMouseUp, true);
+
+            // Animation loop
+            animate();
+        }
+
+        function onMouseDown(event) {
+            // Check if shift key is pressed
+            if (!event.shiftKey) return;
+
+            // Check if click is on the canvas
+            const canvas = renderer.domElement;
+            const rect = canvas.getBoundingClientRect();
+            const isOnCanvas = event.clientX >= rect.left && event.clientX <= rect.right &&
+                              event.clientY >= rect.top && event.clientY <= rect.bottom;
+
+            if (!isOnCanvas) {
+                return;
+            }
+
+            // Disable OrbitControls to prevent panning
+            controls.enabled = false;
+
+            // Stop event from reaching other handlers
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+
+            boxSelectStart.x = event.clientX - rect.left;
+            boxSelectStart.y = event.clientY - rect.top;
+            isBoxSelecting = true;
+
+            // Position selection box relative to viewer container
+            const viewerRect = document.querySelector('.viewer-container').getBoundingClientRect();
+            selectionBox.style.left = (event.clientX - viewerRect.left) + 'px';
+            selectionBox.style.top = (event.clientY - viewerRect.top) + 'px';
+            selectionBox.style.width = '0px';
+            selectionBox.style.height = '0px';
+            selectionBox.style.display = 'block';
+        }
+
+        function onMouseMove(event) {
+            if (!isBoxSelecting) return;
+
+            // Stop event from reaching OrbitControls during box selection
+            event.preventDefault();
+            event.stopPropagation();
+
+            const canvas = renderer.domElement;
+            const rect = canvas.getBoundingClientRect();
+            const viewerRect = document.querySelector('.viewer-container').getBoundingClientRect();
+
+            const currentX = event.clientX - rect.left;
+            const currentY = event.clientY - rect.top;
+
+            // Calculate selection box dimensions relative to viewer container
+            const startViewerX = boxSelectStart.x + (rect.left - viewerRect.left);
+            const startViewerY = boxSelectStart.y + (rect.top - viewerRect.top);
+            const currentViewerX = currentX + (rect.left - viewerRect.left);
+            const currentViewerY = currentY + (rect.top - viewerRect.top);
+
+            const left = Math.min(startViewerX, currentViewerX);
+            const top = Math.min(startViewerY, currentViewerY);
+            const width = Math.abs(currentViewerX - startViewerX);
+            const height = Math.abs(currentViewerY - startViewerY);
+
+            selectionBox.style.left = left + 'px';
+            selectionBox.style.top = top + 'px';
+            selectionBox.style.width = width + 'px';
+            selectionBox.style.height = height + 'px';
+        }
+
+        function onMouseUp(event) {
+            if (!isBoxSelecting) return;
+
+            // Stop event from reaching OrbitControls
+            event.preventDefault();
+            event.stopPropagation();
+
+            isBoxSelecting = false;
+            selectionBox.style.display = 'none';
+
+            // Re-enable OrbitControls
+            controls.enabled = true;
+
+            const canvas = renderer.domElement;
+            const rect = canvas.getBoundingClientRect();
+            const endX = event.clientX - rect.left;
+            const endY = event.clientY - rect.top;
+
+            // Calculate selection bounds (in canvas coordinates)
+            const minX = Math.min(boxSelectStart.x, endX);
+            const maxX = Math.max(boxSelectStart.x, endX);
+            const minY = Math.min(boxSelectStart.y, endY);
+            const maxY = Math.max(boxSelectStart.y, endY);
+
+            const selectionWidth = maxX - minX;
+            const selectionHeight = maxY - minY;
+
+            // If it's a small drag (basically a click), do single object selection
+            if (selectionWidth < 5 && selectionHeight < 5) {
+                selectObjectAtPoint(boxSelectStart.x, boxSelectStart.y, rect);
+            } else {
+                // Box selection - find all objects within the box
+                selectObjectsInBox(minX, minY, maxX, maxY, rect);
+            }
+        }
+
+        function selectObjectAtPoint(x, y, rect) {
+            // Convert to normalized device coordinates
+            mouse.x = (x / rect.width) * 2 - 1;
+            mouse.y = -(y / rect.height) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+
+            // Get all meshes from objectsList
+            const meshes = objectsList.map(obj => obj.object).filter(obj => obj && obj.isMesh);
+            const intersects = raycaster.intersectObjects(meshes);
+
+            if (intersects.length > 0) {
+                // Find which object in objectsList was clicked
+                const clickedMesh = intersects[0].object;
+                const index = objectsList.findIndex(obj => obj.object === clickedMesh);
+                if (index !== -1) {
+                    selectObject(index);
+                    showStatus(`Selected: ${objectsList[index].name}`, 'success');
+                }
+            }
+        }
+
+        function selectObjectsInBox(minX, minY, maxX, maxY, rect) {
+            const selectedIndices = [];
+
+            objectsList.forEach((obj, index) => {
+                if (!obj.object || !obj.object.geometry) return;
+
+                // Get the center of the object in screen space
+                obj.object.geometry.computeBoundingBox();
+                const center = new THREE.Vector3();
+                obj.object.geometry.boundingBox.getCenter(center);
+                center.applyMatrix4(obj.object.matrixWorld);
+
+                // Project to screen coordinates
+                const screenPos = center.clone().project(camera);
+                const screenX = (screenPos.x + 1) / 2 * rect.width;
+                const screenY = (-screenPos.y + 1) / 2 * rect.height;
+
+                // Check if center is within selection box
+                if (screenX >= minX && screenX <= maxX && screenY >= minY && screenY <= maxY) {
+                    // Check if object is in front of camera (not behind)
+                    if (screenPos.z < 1) {
+                        selectedIndices.push(index);
+                    }
+                }
+            });
+
+            // Select all objects in the box (add to selection, don't replace)
+            selectedIndices.forEach(index => {
+                if (!selectedObjects.has(index)) {
+                    selectObject(index);
+                }
+            });
+
+            if (selectedIndices.length > 0) {
+                showStatus(`Selected ${selectedIndices.length} object(s)`, 'success');
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            const container = document.getElementById('canvas-container');
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }
+
+        // File upload handler
+        document.getElementById('gpx-file').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            document.getElementById('file-name').textContent = file.name;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                showLoading(true);
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    gpxData = result.data;
+                    // Store original bounds before padding
+                    originalBounds = gpxData.bounds ? { ...gpxData.bounds } : null;
+                    // Apply padding to bounds
+                    if (gpxData.bounds) {
+                        gpxData.bounds = getPaddedBounds(gpxData.bounds);
+                    }
+                    gpxData.needsRefetch = true;  // Flag to fetch data when generating
+                    showStatus('GPX loaded! Adjust settings and click "Generate 3D Model".', 'success');
+                } else {
+                    showStatus('Error: ' + result.error, 'error');
+                }
+            } catch (error) {
+                showStatus('Error uploading file: ' + error.message, 'error');
+            } finally {
+                showLoading(false);
+            }
+        });
+
+        // Extract coordinates from Google Maps URL
+        function extractCoordsFromGoogleMapsUrl(url) {
+            // Try to extract coordinates from various Google Maps URL formats
+            // Format 1: @-37.8470818,140.7846017 in the path
+            // Format 2: !3d-37.8470861!4d140.7871766 in the data parameter (more precise)
+
+            // Try the !3d...!4d format first (most precise)
+            const dataMatch = url.match(/!3d(-?\d+\.?\d*)!4d(-?\d+\.?\d*)/);
+            if (dataMatch) {
+                return {
+                    lat: parseFloat(dataMatch[1]),
+                    lon: parseFloat(dataMatch[2])
+                };
+            }
+
+            // Try the @lat,lng format
+            const atMatch = url.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+            if (atMatch) {
+                return {
+                    lat: parseFloat(atMatch[1]),
+                    lon: parseFloat(atMatch[2])
+                };
+            }
+
+            // Try query parameter format: q=lat,lng
+            const qMatch = url.match(/[?&]q=(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+            if (qMatch) {
+                return {
+                    lat: parseFloat(qMatch[1]),
+                    lon: parseFloat(qMatch[2])
+                };
+            }
+
+            return null;
+        }
+
+        // Geocode address
+        async function geocodeAddress() {
+            const input = document.getElementById('address-input').value.trim();
+            const btn = document.getElementById('geocode-btn');
+
+            if (!input) {
+                showStatus('Please enter an address or paste a Google Maps URL', 'error');
+                return;
+            }
+
+            // Show loading state on button
+            const originalText = btn.textContent;
+            btn.textContent = 'Searching...';
+            btn.disabled = true;
+
+            // Check if input is a Google Maps URL
+            if (input.includes('google.com/maps') || input.includes('goo.gl/maps')) {
+                const coords = extractCoordsFromGoogleMapsUrl(input);
+                if (coords) {
+                    const lat = coords.lat;
+                    const lon = coords.lon;
+
+                    // Always include address in originalBounds so padding slider works correctly
+                    if (originalBounds) {
+                        // Check if too far from GPX area
+                        const maxExpansion = 0.1;  // ~11km
+                        const latDiff = Math.min(Math.abs(lat - originalBounds.south), Math.abs(lat - originalBounds.north));
+                        const lonDiff = Math.min(Math.abs(lon - originalBounds.west), Math.abs(lon - originalBounds.east));
+                        const isOutside = lat < originalBounds.south || lat > originalBounds.north ||
+                                         lon < originalBounds.west || lon > originalBounds.east;
+
+                        if (isOutside && (latDiff > maxExpansion || lonDiff > maxExpansion)) {
+                            showStatus(`Location is too far from GPX area (${(Math.max(latDiff, lonDiff) * 111).toFixed(1)}km away). Max expansion is ~11km.`, 'error');
+                            btn.textContent = originalText;
+                            btn.disabled = false;
+                            return;
+                        }
+
+                        // Always expand originalBounds to include the address location
+                        const margin = 0.001;
+                        originalBounds = {
+                            north: Math.max(originalBounds.north, lat + margin),
+                            south: Math.min(originalBounds.south, lat - margin),
+                            east: Math.max(originalBounds.east, lon + margin),
+                            west: Math.min(originalBounds.west, lon - margin)
+                        };
+
+                        // Apply padding to the expanded bounds
+                        gpxData.bounds = getPaddedBounds(originalBounds);
+                        gpxData.needsRefetch = true;
+                    }
+
+                    // Store location and create marker immediately
+                    geocodedLocation = { lat, lon };
+                    createMarker(lat, lon);
+
+                    // Enable the "show only address building" checkbox
+                    document.getElementById('show-only-address-building').disabled = false;
+                    document.getElementById('address-status').textContent = `Coordinates from Google Maps: ${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+
+                    showStatus(`Found coordinates from Google Maps URL!`, 'success');
+
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                    return;
+                } else {
+                    showStatus('Could not extract coordinates from Google Maps URL', 'error');
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                    return;
+                }
+            }
+
+            // Otherwise, use the geocoding API
+            try {
+                const response = await fetch('/api/geocode', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ address: input })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    const lat = result.location.lat;
+                    const lon = result.location.lon;
+
+                    // Always include address in originalBounds so padding slider works correctly
+                    if (originalBounds) {
+                        // Check if too far from GPX area
+                        const maxExpansion = 0.1;  // ~11km
+                        const latDiff = Math.min(Math.abs(lat - originalBounds.south), Math.abs(lat - originalBounds.north));
+                        const lonDiff = Math.min(Math.abs(lon - originalBounds.west), Math.abs(lon - originalBounds.east));
+                        const isOutside = lat < originalBounds.south || lat > originalBounds.north ||
+                                         lon < originalBounds.west || lon > originalBounds.east;
+
+                        if (isOutside && (latDiff > maxExpansion || lonDiff > maxExpansion)) {
+                            showStatus(`Address is too far from GPX area (${(Math.max(latDiff, lonDiff) * 111).toFixed(1)}km away). Max expansion is ~11km.`, 'error');
+                            btn.textContent = originalText;
+                            btn.disabled = false;
+                            return;
+                        }
+
+                        // Always expand originalBounds to include the address location
+                        const margin = 0.001;
+                        originalBounds = {
+                            north: Math.max(originalBounds.north, lat + margin),
+                            south: Math.min(originalBounds.south, lat - margin),
+                            east: Math.max(originalBounds.east, lon + margin),
+                            west: Math.min(originalBounds.west, lon - margin)
+                        };
+
+                        // Apply padding to the expanded bounds
+                        gpxData.bounds = getPaddedBounds(originalBounds);
+                        gpxData.needsRefetch = true;
+                    }
+
+                    // Store location and create marker
+                    geocodedLocation = { lat, lon };
+                    createMarker(lat, lon);
+
+                    // Enable the "show only address building" checkbox
+                    document.getElementById('show-only-address-building').disabled = false;
+                    document.getElementById('address-status').textContent = `Address: ${result.location.address}`;
+                    showStatus(`Address found: ${result.location.address}`, 'success');
+                } else {
+                    showStatus('Error: ' + result.error, 'error');
+                    document.getElementById('show-only-address-building').disabled = true;
+                    document.getElementById('address-status').textContent = '';
+                }
+            } catch (error) {
+                showStatus('Error geocoding address: ' + error.message, 'error');
+            } finally {
+                // Restore button state
+                btn.textContent = originalText;
+                btn.disabled = false;
+            }
+        }
+
+        // Fetch elevation data
+        async function fetchElevationData(bounds) {
+            try {
+                showStatus('Fetching elevation data...', 'info');
+                const response = await fetch('/api/elevation', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        bounds,
+                        resolution: 200  // High resolution with smooth interpolation
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    elevationData = result.elevation;
+                    showStatus('Elevation data loaded!', 'success');
+                } else {
+                    showStatus('Error: ' + result.error, 'error');
+                }
+            } catch (error) {
+                showStatus('Error fetching elevation: ' + error.message, 'error');
+            }
+        }
+
+        // Fetch OSM features
+        async function fetchOSMFeatures(bounds) {
+            const features = [];
+            if (document.getElementById('feature-roads').checked) features.push('roads');
+            if (document.getElementById('feature-water').checked) features.push('water');
+            if (document.getElementById('feature-buildings').checked) features.push('buildings');
+            if (document.getElementById('feature-railways').checked) features.push('railways');
+
+            try {
+                showStatus('Fetching map features...', 'info');
+                const response = await fetch('/api/osm-features', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ bounds, features })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    osmFeatures = result.features;
+                    showStatus('Map features loaded!', 'success');
+                } else {
+                    showStatus('Error: ' + result.error, 'error');
+                }
+            } catch (error) {
+                showStatus('Error fetching OSM features: ' + error.message, 'error');
+            }
+        }
+
+        // Track whether last fetch was for circular model (to detect changes)
+        let lastFetchWasCircular = false;
+
+        // Generate 3D model
+        async function generateModel() {
+            if (!elevationData && !gpxData?.bounds) {
+                showStatus('Please upload a GPX file first', 'error');
+                return;
+            }
+
+            const isCircular = document.getElementById('circular-model').checked;
+
+            // Need refetch if circular mode changed since last fetch
+            const circularChanged = isCircular !== lastFetchWasCircular;
+
+            // Fetch data if needed (first time, bounds changed, or circular mode changed)
+            if (gpxData && (gpxData.needsRefetch || !elevationData || circularChanged)) {
+                showStatus('Fetching elevation and map data...', 'info');
+                showLoading(true);
+                try {
+                    // Use square bounds for circular model, regular bounds otherwise
+                    let fetchBounds = gpxData.bounds;
+                    if (isCircular) {
+                        fetchBounds = getSquareBoundsForCircle(gpxData.bounds);
+                        console.log('Circular mode: expanding to square bounds', fetchBounds);
+                    }
+
+                    await Promise.all([
+                        fetchElevationData(fetchBounds),
+                        fetchOSMFeatures(fetchBounds)
+                    ]);
+                    gpxData.needsRefetch = false;
+                    lastFetchWasCircular = isCircular;
+                } catch (error) {
+                    showStatus('Error fetching data: ' + error.message, 'error');
+                    showLoading(false);
+                    return;
+                }
+            }
+
+            if (!elevationData) {
+                showStatus('Failed to fetch elevation data', 'error');
+                showLoading(false);
+                return;
+            }
+
+            const showOnlyAddressBuilding = document.getElementById('show-only-address-building').checked;
+
+            const options = {
+                vertical_scale: parseFloat(document.getElementById('vertical-scale').value),
+                model_width: parseFloat(document.getElementById('model-width').value),
+                base_height: parseFloat(document.getElementById('base-height').value),
+                include_base: document.getElementById('include-base').checked,
+                circular_model: document.getElementById('circular-model').checked,
+                gpx_tracks: gpxData ? gpxData.tracks : [],  // Include GPX tracks for rendering
+                address_location: geocodedLocation,  // Pass the geocoded address location
+                show_only_address_building: showOnlyAddressBuilding  // Whether to show only the address building
+            };
+
+            try {
+                showLoading(true);
+                showStatus('Generating 3D model...', 'info');
+
+                const response = await fetch('/api/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        elevation: elevationData,
+                        features: osmFeatures || {},
+                        options
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    currentMesh = result.mesh;
+                    renderMesh(currentMesh);
+                    updateObjectList(currentMesh);
+                    showStatus('Model generated successfully!', 'success');
+                } else {
+                    showStatus('Error: ' + result.error, 'error');
+                }
+            } catch (error) {
+                showStatus('Error generating model: ' + error.message, 'error');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // Generate descriptive display name for a feature
+        function generateDisplayName(feature, isAddressBuilding) {
+            if (isAddressBuilding) {
+                return 'Address Building';
+            }
+
+            const name = feature.name;
+            const type = feature.type;
+
+            // Format type nicely
+            const typeLabels = {
+                'water': 'Water',
+                'road': 'Road',
+                'building': 'Building',
+                'railway': 'Railway'
+            };
+            const typeLabel = typeLabels[type] || type;
+
+            // Road type formatting
+            const roadTypeLabels = {
+                'motorway': 'Motorway',
+                'trunk': 'Trunk Road',
+                'primary': 'Primary Road',
+                'secondary': 'Secondary Road',
+                'tertiary': 'Tertiary Road',
+                'residential': 'Street',
+                'service': 'Service Road',
+                'track': 'Track',
+                'path': 'Path',
+                'footway': 'Footway',
+                'cycleway': 'Cycleway',
+                'unclassified': 'Road'
+            };
+
+            if (type === 'road') {
+                const roadType = feature.road_type || 'road';
+                const roadLabel = roadTypeLabels[roadType] || 'Road';
+                if (name) {
+                    return `${name}`;  // e.g., "Main Street"
+                } else {
+                    return roadLabel;  // e.g., "Residential Street"
+                }
+            }
+
+            if (type === 'water') {
+                if (name) {
+                    return `${name}`;  // e.g., "Blue Lake"
+                } else {
+                    return 'Water Body';
+                }
+            }
+
+            if (type === 'building') {
+                const buildingType = feature.building_type || 'building';
+                const buildingLabels = {
+                    'yes': 'Building',
+                    'house': 'House',
+                    'residential': 'Residence',
+                    'commercial': 'Commercial',
+                    'industrial': 'Industrial',
+                    'retail': 'Retail',
+                    'church': 'Church',
+                    'school': 'School',
+                    'hospital': 'Hospital',
+                    'hotel': 'Hotel',
+                    'garage': 'Garage',
+                    'shed': 'Shed'
+                };
+                const buildingLabel = buildingLabels[buildingType] || 'Building';
+                if (name) {
+                    return `${name}`;  // e.g., "Town Hall"
+                } else {
+                    return buildingLabel;  // e.g., "House"
+                }
+            }
+
+            // Default: use name or type
+            return name || typeLabel;
+        }
+
+        // Render mesh in Three.js
+        function renderMesh(meshData) {
+            // Clear existing objects (except lights and grid)
+            while(scene.children.length > 3) {
+                scene.remove(scene.children[3]);
+            }
+            objectsList = [];
+            selectedObjects.clear();
+
+            // Render terrain
+            if (meshData.terrain) {
+                const terrainObj = createMeshFromData(meshData.terrain, 0x8B7355);
+                terrainObj.userData = { type: 'terrain', id: 'terrain', originalColor: 0x8B7355 };
+                scene.add(terrainObj);
+                objectsList.push({ type: 'Terrain', id: 'terrain', name: 'Terrain', object: terrainObj });
+            }
+
+            // Render features
+            if (meshData.features) {
+                console.log('Features count:', meshData.features.length);
+                meshData.features.forEach((feature, index) => {
+                    console.log(`Feature ${index}: type=${feature.type}, vertices=${feature.vertices?.length}, faces=${feature.faces?.length}`);
+
+                    // Skip features with no geometry
+                    if (!feature.vertices || !feature.faces || feature.vertices.length === 0 || feature.faces.length === 0) {
+                        console.warn(`Skipping feature ${feature.type} - no geometry`);
+                        return;
+                    }
+
+                    let color;
+                    let isAddressBuilding = feature.is_address_building === true;
+
+                    switch(feature.type) {
+                        case 'building':
+                            color = isAddressBuilding ? 0xff0000 : 0xaaaaaa;  // Red for address building
+                            break;
+                        case 'road': color = 0x444444; break;
+                        case 'water': color = 0x4a90e2; break;
+                        default: color = 0x888888;
+                    }
+
+                    const featureObj = createMeshFromData(feature, color);
+                    featureObj.userData = { type: feature.type, id: feature.id, isAddressBuilding: isAddressBuilding, originalColor: color };
+
+                    // Add emissive for address building to make it stand out
+                    if (isAddressBuilding) {
+                        featureObj.material.emissive = new THREE.Color(0x660000);
+                    }
+
+                    // Generate descriptive display name
+                    let displayName = generateDisplayName(feature, isAddressBuilding);
+
+                    scene.add(featureObj);
+                    objectsList.push({
+                        type: feature.type,
+                        id: feature.id,
+                        name: displayName,
+                        object: featureObj
+                    });
+                });
+            }
+
+            // Render GPX track (red)
+            if (meshData.gpx_track && meshData.gpx_track.vertices && meshData.gpx_track.vertices.length > 0) {
+                const trackColor = 0xff0000;  // Bright red
+                const trackObj = createMeshFromData(meshData.gpx_track, trackColor);
+                // Make it emissive so it stands out
+                trackObj.material.emissive = new THREE.Color(0x660000);
+                trackObj.userData = { type: 'gpx_track', id: 'gpx_track', originalColor: trackColor };
+                scene.add(trackObj);
+                objectsList.push({
+                    type: 'GPX',
+                    id: 'gpx_track',
+                    name: 'GPX Track',
+                    object: trackObj
+                });
+            }
+
+            // Center camera on model
+            centerCamera();
+        }
+
+        // Create Three.js mesh from vertex/face data
+        function createMeshFromData(meshData, color) {
+            const geometry = new THREE.BufferGeometry();
+
+            const vertices = meshData.vertices.flat();
+            const indices = meshData.faces.flat();
+
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            geometry.setIndex(indices);
+            geometry.computeVertexNormals();
+
+            const material = new THREE.MeshPhongMaterial({
+                color: color,
+                flatShading: false,
+                side: THREE.DoubleSide
+            });
+
+            return new THREE.Mesh(geometry, material);
+        }
+
+        // Center camera on model
+        function centerCamera() {
+            // Only compute bounding box from model objects, not helpers/lights
+            const box = new THREE.Box3();
+            let hasObjects = false;
+
+            scene.traverse((child) => {
+                if (child.isMesh && child.geometry) {
+                    child.geometry.computeBoundingBox();
+                    const childBox = child.geometry.boundingBox.clone();
+                    childBox.applyMatrix4(child.matrixWorld);
+                    box.union(childBox);
+                    hasObjects = true;
+                }
+            });
+
+            if (!hasObjects) return;
+
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const fov = camera.fov * (Math.PI / 180);
+            let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
+
+            cameraZ *= 1.5;
+
+            // Update camera far plane to see large models
+            camera.far = maxDim * 10;
+            camera.updateProjectionMatrix();
+
+            camera.position.set(center.x + cameraZ, center.y + cameraZ * 0.5, center.z + cameraZ);
+            camera.lookAt(center);
+            controls.target.copy(center);
+            controls.update();
+        }
+
+        // Update object list
+        function updateObjectList(meshData) {
+            const list = document.getElementById('object-list');
+            list.innerHTML = '';
+
+            // Group features by type for counting
+            const typeCounts = {};
+            objectsList.forEach(obj => {
+                const t = obj.type;
+                typeCounts[t] = (typeCounts[t] || 0) + 1;
+            });
+
+            objectsList.forEach((obj, index) => {
+                const item = document.createElement('div');
+                item.className = 'object-item';
+
+                // Type badge colors
+                const badgeColors = {
+                    'Terrain': '#8B7355',
+                    'water': '#4a90e2',
+                    'road': '#444444',
+                    'building': '#aaaaaa',
+                    'GPX': '#ff0000',
+                    'marker': '#ff0000',
+                    'label': '#667eea'
+                };
+                const badgeColor = badgeColors[obj.type] || '#888888';
+
+                // Format type label
+                const typeLabels = {
+                    'water': 'Water',
+                    'road': 'Road',
+                    'building': 'Bldg',
+                    'Terrain': 'Terrain',
+                    'GPX': 'GPX',
+                    'marker': 'Marker',
+                    'label': 'Label'
+                };
+                const typeLabel = typeLabels[obj.type] || obj.type;
+
+                item.innerHTML = `
+                    <span class="object-info">
+                        <span class="type-badge" style="background: ${badgeColor}; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.75em; margin-right: 6px;">${typeLabel}</span>
+                        <span class="object-name">${obj.name}</span>
+                    </span>
+                    <button onclick="event.stopPropagation(); deleteObject(${index})">X</button>
+                `;
+                // Mark as selected if in selectedObjects
+                if (selectedObjects.has(index)) {
+                    item.classList.add('selected');
+                }
+
+                item.onclick = (e) => {
+                    if (e.target.tagName !== 'BUTTON') {
+                        selectObject(index);
+                    }
+                };
+                list.appendChild(item);
+            });
+
+            updateSelectionCount();
+        }
+
+        // Toggle object selection (multi-select)
+        function selectObject(index, addToSelection = true) {
+            const obj = objectsList[index]?.object;
+            if (!obj) return;
+
+            if (selectedObjects.has(index)) {
+                // Deselect this object
+                selectedObjects.delete(index);
+                document.querySelectorAll('.object-item')[index]?.classList.remove('selected');
+
+                // Restore original color
+                const originalColor = obj.userData.originalColor;
+                if (originalColor !== undefined) {
+                    obj.material.color.setHex(originalColor);
+                }
+                // Reset emissive (unless it's address building or GPX track)
+                if (!obj.userData.isAddressBuilding && obj.userData.type !== 'gpx_track') {
+                    obj.material.emissive.setHex(0x000000);
+                } else {
+                    obj.material.emissive.setHex(0x660000);
+                }
+            } else {
+                // Select this object
+                selectedObjects.add(index);
+                document.querySelectorAll('.object-item')[index]?.classList.add('selected');
+
+                // Highlight with bright yellow color and strong emissive
+                obj.material.color.setHex(0xffff00);
+                obj.material.emissive.setHex(0x888800);
+            }
+
+            updateSelectionCount();
+        }
+
+        // Select all objects
+        function selectAllObjects() {
+            objectsList.forEach((obj, index) => {
+                if (!selectedObjects.has(index)) {
+                    selectedObjects.add(index);
+                    document.querySelectorAll('.object-item')[index]?.classList.add('selected');
+                    if (obj.object) {
+                        obj.object.material.color.setHex(0xffff00);
+                        obj.object.material.emissive.setHex(0x888800);
+                    }
+                }
+            });
+            updateSelectionCount();
+        }
+
+        // Deselect all objects
+        function deselectAllObjects() {
+            selectedObjects.forEach(index => {
+                const obj = objectsList[index]?.object;
+                if (obj) {
+                    document.querySelectorAll('.object-item')[index]?.classList.remove('selected');
+                    const originalColor = obj.userData.originalColor;
+                    if (originalColor !== undefined) {
+                        obj.material.color.setHex(originalColor);
+                    }
+                    if (!obj.userData.isAddressBuilding && obj.userData.type !== 'gpx_track') {
+                        obj.material.emissive.setHex(0x000000);
+                    } else {
+                        obj.material.emissive.setHex(0x660000);
+                    }
+                }
+            });
+            selectedObjects.clear();
+            updateSelectionCount();
+        }
+
+        // Delete all selected objects
+        function deleteSelectedObjects() {
+            if (selectedObjects.size === 0) {
+                showStatus('No objects selected', 'error');
+                return;
+            }
+
+            if (!confirm(`Delete ${selectedObjects.size} selected object(s)?`)) {
+                return;
+            }
+
+            // Sort indices in descending order to delete from end first (preserves indices)
+            const indicesToDelete = Array.from(selectedObjects).sort((a, b) => b - a);
+
+            indicesToDelete.forEach(index => {
+                scene.remove(objectsList[index].object);
+                objectsList.splice(index, 1);
+            });
+
+            selectedObjects.clear();
+            updateObjectList(currentMesh);
+            updateSelectionCount();
+            showStatus(`Deleted ${indicesToDelete.length} object(s)`, 'success');
+        }
+
+        // Update selection count display
+        function updateSelectionCount() {
+            const countEl = document.getElementById('selection-count');
+            if (selectedObjects.size > 0) {
+                countEl.textContent = `${selectedObjects.size} object(s) selected`;
+            } else {
+                countEl.textContent = '';
+            }
+        }
+
+        // Delete single object
+        function deleteObject(index) {
+            if (confirm('Delete this object?')) {
+                scene.remove(objectsList[index].object);
+                objectsList.splice(index, 1);
+                // Update selectedObjects indices (remove deleted, shift higher indices)
+                const newSelected = new Set();
+                selectedObjects.forEach(i => {
+                    if (i < index) newSelected.add(i);
+                    else if (i > index) newSelected.add(i - 1);
+                    // Skip if i === index (deleted)
+                });
+                selectedObjects = newSelected;
+                updateObjectList(currentMesh);
+                updateSelectionCount();
+                showStatus('Object deleted', 'success');
+            }
+        }
+
+        // Add label
+        function addLabel() {
+            const text = document.getElementById('label-text').value;
+            if (!text) {
+                showStatus('Please enter label text', 'error');
+                return;
+            }
+
+            // Create text sprite
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = 512;
+            canvas.height = 128;
+
+            context.fillStyle = 'rgba(0,0,0,0.7)';
+            context.fillRect(0, 0, canvas.width, canvas.height);
+
+            context.font = '48px Arial';
+            context.fillStyle = 'white';
+            context.textAlign = 'center';
+            context.fillText(text, canvas.width / 2, canvas.height / 2 + 16);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            const spriteMaterial = new THREE.SpriteMaterial({ map: texture });
+            const sprite = new THREE.Sprite(spriteMaterial);
+            sprite.scale.set(50, 12.5, 1);
+            sprite.position.set(0, 50, 0);
+
+            sprite.userData = { type: 'label', id: 'label_' + Date.now() };
+            scene.add(sprite);
+            objectsList.push({ type: 'label', id: sprite.userData.id, name: text, object: sprite });
+
+            document.getElementById('label-text').value = '';
+            updateObjectList(currentMesh);
+            showStatus('Label added!', 'success');
+        }
+
+        // Build export mesh data from current scene (respects deletions)
+        function buildExportMesh() {
+            const exportData = {
+                terrain: null,
+                features: [],
+                gpx_track: null
+            };
+
+            objectsList.forEach(obj => {
+                if (!obj.object || !obj.object.geometry) return;
+
+                const geometry = obj.object.geometry;
+                const position = geometry.attributes.position;
+                const index = geometry.index;
+
+                // Extract vertices
+                const vertices = [];
+                for (let i = 0; i < position.count; i++) {
+                    vertices.push([
+                        position.getX(i),
+                        position.getY(i),
+                        position.getZ(i)
+                    ]);
+                }
+
+                // Extract faces
+                const faces = [];
+                if (index) {
+                    for (let i = 0; i < index.count; i += 3) {
+                        faces.push([
+                            index.getX(i),
+                            index.getX(i + 1),
+                            index.getX(i + 2)
+                        ]);
+                    }
+                }
+
+                const meshData = {
+                    vertices: vertices,
+                    faces: faces,
+                    type: obj.object.userData.type || obj.type,
+                    id: obj.id,
+                    name: obj.name,
+                    is_address_building: obj.object.userData.isAddressBuilding || false
+                };
+
+                if (obj.type === 'Terrain' || obj.object.userData.type === 'terrain') {
+                    exportData.terrain = meshData;
+                } else if (obj.type === 'GPX' || obj.object.userData.type === 'gpx_track') {
+                    exportData.gpx_track = meshData;
+                } else if (obj.type !== 'marker' && obj.type !== 'label') {
+                    exportData.features.push(meshData);
+                }
+            });
+
+            return exportData;
+        }
+
+        // Export to 3MF (multi-object format for 3D printing)
+        async function export3MF() {
+            if (objectsList.length === 0) {
+                showStatus('Please generate a model first', 'error');
+                return;
+            }
+
+            try {
+                showLoading(true);
+                showStatus('Exporting to 3MF...', 'info');
+
+                // Build mesh data from current scene (respects deletions)
+                const exportMesh = buildExportMesh();
+
+                const response = await fetch('/api/export/3mf', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        mesh: exportMesh,
+                        filename: 'topo_model.3mf'
+                    })
+                });
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'topo_model.3mf';
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+
+                    showStatus('3MF exported! Objects: Terrain, Roads, Buildings, GPX Track', 'success');
+                } else {
+                    const result = await response.json();
+                    showStatus('Error: ' + result.error, 'error');
+                }
+            } catch (error) {
+                showStatus('Error exporting 3MF: ' + error.message, 'error');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // Store geocoded location for later use
+        let geocodedLocation = null;
+
+        // Set manual coordinates (from Google Maps)
+        function setManualCoordinates() {
+            const latStr = document.getElementById('lat-input').value.trim();
+            const lonStr = document.getElementById('lon-input').value.trim();
+
+            if (!latStr || !lonStr) {
+                showStatus('Please enter both latitude and longitude', 'error');
+                return;
+            }
+
+            const lat = parseFloat(latStr);
+            const lon = parseFloat(lonStr);
+
+            if (isNaN(lat) || isNaN(lon)) {
+                showStatus('Invalid coordinates. Use decimal format (e.g., -37.847086, 140.787177)', 'error');
+                return;
+            }
+
+            if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+                showStatus('Coordinates out of range', 'error');
+                return;
+            }
+
+            // Store location and create marker
+            geocodedLocation = { lat, lon };
+            createMarker(lat, lon);
+
+            // Enable the "show only address building" checkbox
+            document.getElementById('show-only-address-building').disabled = false;
+            document.getElementById('address-status').textContent = `Manual coordinates: ${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+
+            showStatus(`Coordinates set: ${lat.toFixed(6)}, ${lon.toFixed(6)}`, 'success');
+        }
+
+        // Create marker for geocoded address
+        function createMarker(lat, lon) {
+            // Remove any existing marker
+            const existingMarker = scene.children.find(obj => obj.userData && obj.userData.id === 'address_marker');
+            if (existingMarker) {
+                scene.remove(existingMarker);
+                objectsList = objectsList.filter(obj => obj.id !== 'address_marker');
+            }
+
+            // Store location for later use when model is generated
+            geocodedLocation = { lat, lon };
+
+            // Create a taller cone marker (more visible)
+            const geometry = new THREE.ConeGeometry(3, 8, 8);
+            const material = new THREE.MeshPhongMaterial({ color: 0xff0000, emissive: 0x880000 });
+            const marker = new THREE.Mesh(geometry, material);
+
+            // Position relative to bounds using same math as mesh generator
+            if (elevationData && currentMesh) {
+                const bounds = elevationData.bounds;
+                const modelWidth = parseFloat(document.getElementById('model-width').value) || 200;
+                const latRange = bounds.north - bounds.south;
+                const lonRange = bounds.east - bounds.west;
+                const avgLat = (bounds.north + bounds.south) / 2;
+                const lonScale = Math.cos(avgLat * Math.PI / 180);
+                const scaleFactor = modelWidth / Math.max(latRange, lonRange * lonScale);
+
+                const x = (lon - bounds.west) * scaleFactor * lonScale;
+                const z = (bounds.north - lat) * scaleFactor;  // Flipped for map orientation
+
+                // Get approximate Y from terrain height + offset
+                const terrainHeight = 30;  // Approximate mid-height
+                marker.position.set(x, terrainHeight + 10, z);
+                marker.rotation.x = Math.PI;  // Point cone downward
+
+                marker.userData = { type: 'marker', id: 'address_marker' };
+                scene.add(marker);
+                objectsList.push({ type: 'marker', id: 'address_marker', name: 'Address Marker', object: marker });
+                updateObjectList(currentMesh);
+            } else {
+                // No GPX uploaded yet - place marker at center of scene and notify user
+                marker.position.set(0, 20, 0);
+                marker.userData = { type: 'marker', id: 'address_marker', pendingPosition: true };
+                scene.add(marker);
+                objectsList.push({ type: 'marker', id: 'address_marker', name: 'Address Marker (pending)', object: marker });
+                updateObjectList(currentMesh);
+                showStatus('Address saved! Upload a GPX file to position the marker on the terrain.', 'info');
+            }
+        }
+
+        // UI helpers
+        function showStatus(message, type = 'info') {
+            const statusEl = document.getElementById('status-message');
+            statusEl.textContent = message;
+            statusEl.className = `status ${type}`;
+            statusEl.style.display = 'block';
+
+            setTimeout(() => {
+                statusEl.style.display = 'none';
+            }, 10000);
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading').classList.toggle('active', show);
+        }
+
+        function updateSliderValue(id) {
+            const slider = document.getElementById(id);
+            const valueDisplay = document.getElementById(id + '-value');
+            valueDisplay.textContent = slider.value;
+
+            // If boundary padding changed and we have GPX data, update bounds and flag for refetch
+            if (id === 'boundary-padding' && originalBounds && gpxData) {
+                gpxData.bounds = getPaddedBounds(originalBounds);
+                gpxData.needsRefetch = true;
+            }
+        }
+
+        // Initialize on load
+        window.addEventListener('DOMContentLoaded', () => {
+            initScene();
+        });
+    </script>
+</body>
+</html>

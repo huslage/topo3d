@@ -1,0 +1,20 @@
+services:
+  topo3d:
+    build: .
+    container_name: topo3d
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./app:/app
+      - ./uploads:/app/uploads
+      - ./exports:/app/exports
+    environment:
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+      - FLASK_APP=main.py
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5001/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

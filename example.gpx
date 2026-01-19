@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Topo3D Example"
+     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     xmlns="http://www.topografix.com/GPX/1/1"
+     xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+  <metadata>
+    <name>Mount Tamalpais Loop</name>
+    <desc>Example hiking trail around Mount Tamalpais, California</desc>
+    <author>
+      <name>Topo3D</name>
+    </author>
+  </metadata>
+
+  <wpt lat="37.9235" lon="-122.5965">
+    <ele>784</ele>
+    <name>Trailhead</name>
+    <desc>Starting point</desc>
+  </wpt>
+
+  <wpt lat="37.9235" lon="-122.5965">
+    <ele>784</ele>
+    <name>Summit</name>
+    <desc>Mount Tamalpais Peak</desc>
+  </wpt>
+
+  <trk>
+    <name>Mount Tam Loop Trail</name>
+    <trkseg>
+      <trkpt lat="37.9130" lon="-122.5965">
+        <ele>100</ele>
+      </trkpt>
+      <trkpt lat="37.9150" lon="-122.5975">
+        <ele>150</ele>
+      </trkpt>
+      <trkpt lat="37.9170" lon="-122.5985">
+        <ele>200</ele>
+      </trkpt>
+      <trkpt lat="37.9190" lon="-122.5995">
+        <ele>300</ele>
+      </trkpt>
+      <trkpt lat="37.9210" lon="-122.5985">
+        <ele>450</ele>
+      </trkpt>
+      <trkpt lat="37.9225" lon="-122.5975">
+        <ele>600</ele>
+      </trkpt>
+      <trkpt lat="37.9235" lon="-122.5965">
+        <ele>784</ele>
+      </trkpt>
+      <trkpt lat="37.9240" lon="-122.5950">
+        <ele>750</ele>
+      </trkpt>
+      <trkpt lat="37.9230" lon="-122.5935">
+        <ele>650</ele>
+      </trkpt>
+      <trkpt lat="37.9210" lon="-122.5920">
+        <ele>500</ele>
+      </trkpt>
+      <trkpt lat="37.9185" lon="-122.5910">
+        <ele>350</ele>
+      </trkpt>
+      <trkpt lat="37.9160" lon="-122.5915">
+        <ele>250</ele>
+      </trkpt>
+      <trkpt lat="37.9140" lon="-122.5930">
+        <ele>150</ele>
+      </trkpt>
+      <trkpt lat="37.9130" lon="-122.5945">
+        <ele>100</ele>
+      </trkpt>
+      <trkpt lat="37.9130" lon="-122.5965">
+        <ele>100</ele>
+      </trkpt>
+    </trkseg>
+  </trk>
+</gpx>
