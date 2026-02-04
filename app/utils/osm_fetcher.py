@@ -135,6 +135,109 @@ def query_overpass(query):
     return []
 
 
+def generate_feature_name(tags, feature_type, feature_id):
+    """
+    Generate a descriptive name for a feature from OSM tags.
+
+    Args:
+        tags: Dictionary of OSM tags
+        feature_type: Type of feature (road, building, water, etc.)
+        feature_id: OSM feature ID (fallback if no name available)
+
+    Returns:
+        str: Descriptive feature name
+    """
+    # Road type label mapping
+    ROAD_TYPE_LABELS = {
+        'motorway': 'Motorway',
+        'trunk': 'Trunk Road',
+        'primary': 'Primary Road',
+        'secondary': 'Secondary Road',
+        'tertiary': 'Tertiary Road',
+        'unclassified': 'Road',
+        'residential': 'Residential Street',
+        'service': 'Service Road',
+        'motorway_link': 'Motorway Link',
+        'trunk_link': 'Trunk Link',
+        'primary_link': 'Primary Link',
+        'secondary_link': 'Secondary Link',
+        'tertiary_link': 'Tertiary Link',
+        'living_street': 'Living Street',
+        'pedestrian': 'Pedestrian Way',
+        'track': 'Track',
+        'bus_guideway': 'Bus Guideway',
+        'escape': 'Emergency Escape',
+        'raceway': 'Raceway',
+        'road': 'Road',
+        'footway': 'Footway',
+        'bridleway': 'Bridleway',
+        'steps': 'Steps',
+        'path': 'Path',
+        'cycleway': 'Cycle Way'
+    }
+
+    # Water type label mapping
+    WATER_TYPE_LABELS = {
+        'river': 'River',
+        'stream': 'Stream',
+        'canal': 'Canal',
+        'drain': 'Drain',
+        'ditch': 'Ditch',
+        'lake': 'Lake',
+        'pond': 'Pond',
+        'reservoir': 'Reservoir',
+        'basin': 'Basin'
+    }
+
+    name = tags.get('name')
+    type_label = None
+
+    # Generate type label based on feature type
+    if feature_type == 'road':
+        highway_type = tags.get('highway')
+        if highway_type:
+            type_label = ROAD_TYPE_LABELS.get(highway_type, highway_type.title())
+
+    elif feature_type == 'building':
+        # Check for building amenity/shop type
+        if 'amenity' in tags:
+            type_label = tags['amenity'].replace('_', ' ').title()
+        elif 'shop' in tags:
+            type_label = tags['shop'].replace('_', ' ').title() + ' Shop'
+        elif 'building' in tags and tags['building'] not in ['yes', 'true']:
+            type_label = tags['building'].replace('_', ' ').title()
+        else:
+            type_label = 'Building'
+
+    elif feature_type == 'water':
+        # Check for water type
+        if 'waterway' in tags:
+            waterway_type = tags['waterway']
+            type_label = WATER_TYPE_LABELS.get(waterway_type, waterway_type.title())
+        elif 'water' in tags and tags['water'] not in ['yes', 'true']:
+            type_label = tags['water'].replace('_', ' ').title()
+        else:
+            type_label = 'Water Body'
+
+    elif feature_type == 'railway':
+        railway_type = tags.get('railway', 'railway')
+        type_label = railway_type.replace('_', ' ').title()
+
+    else:
+        type_label = feature_type.title()
+
+    # Format: "{name} ({type})" when both available, otherwise just what we have
+    if name and type_label:
+        return f"{name} ({type_label})"
+    elif name:
+        return name
+    elif type_label:
+        return type_label
+    else:
+        # Fallback to feature type and ID
+        return f"{feature_type}_{feature_id}"
+
+
 def parse_elements(elements, feature_type):
     """
     Parse OSM elements into simplified feature format.
@@ -184,17 +287,15 @@ def parse_elements(elements, feature_type):
             continue
 
         tags = element.get('tags', {})
+        feature_id = element.get('id')
 
         feature = {
-            'id': element.get('id'),
+            'id': feature_id,
             'type': feature_type,
             'coordinates': coordinates,
-            'tags': tags
+            'tags': tags,
+            'name': generate_feature_name(tags, feature_type, feature_id)
         }
-
-        # Add specific attributes based on tags
-        if 'name' in tags:
-            feature['name'] = tags['name']
 
         if 'highway' in tags:
             feature['road_type'] = tags['highway']

@@ -5,6 +5,7 @@ import zipfile
 import io
 from stl import mesh
 from scipy.spatial import Delaunay
+from .shape_clipper import CircleClipper, SquareClipper, RectangleClipper, HexagonClipper
 
 
 def generate_mesh(elevation_data, features, options):
@@ -31,7 +32,11 @@ def generate_mesh(elevation_data, features, options):
         base_height = options.get('base_height', 10.0)  # mm
         model_width = options.get('model_width', 200.0)  # mm
         include_base = options.get('include_base', True)
-        circular_model = options.get('circular_model', False)
+
+        # Shape selection (backward compatible with circular_model)
+        model_shape = options.get('model_shape', 'square')
+        if options.get('circular_model', False):
+            model_shape = 'circle'
 
         # Calculate scaling factors
         lat_range = bounds['north'] - bounds['south']
@@ -49,6 +54,27 @@ def generate_mesh(elevation_data, features, options):
         max_elev = np.max(elevation_grid)
         elev_range = max_elev - min_elev if max_elev > min_elev else 1.0
 
+        # Instantiate shape clipper
+        lat_scaled = lat_range * scale_factor
+        lon_scaled = lon_range * lon_scale * scale_factor
+        center_x = lon_scaled / 2
+        center_z = lat_scaled / 2
+
+        if model_shape == 'circle':
+            radius = min(lon_scaled, lat_scaled) / 2
+            shape_clipper = CircleClipper(center_x, center_z, radius)
+        elif model_shape == 'rectangle':
+            # Auto aspect ratio from bounds
+            half_width = lon_scaled / 2
+            half_height = lat_scaled / 2
+            shape_clipper = RectangleClipper(center_x, center_z, half_width, half_height)
+        elif model_shape == 'hexagon':
+            radius = min(lon_scaled, lat_scaled) / 2
+            shape_clipper = HexagonClipper(center_x, center_z, radius)
+        else:  # 'square' or default
+            half_width = min(lon_scaled, lat_scaled) / 2
+            shape_clipper = SquareClipper(center_x, center_z, half_width)
+
         # Generate terrain mesh
         terrain_mesh = generate_terrain_mesh(
             elevation_grid,
@@ -59,7 +85,7 @@ def generate_mesh(elevation_data, features, options):
             vertical_scale,
             base_height,
             include_base,
-            circular_model
+            shape_clipper
         )
 
         # Add features (roads, buildings, water)
@@ -69,17 +95,6 @@ def generate_mesh(elevation_data, features, options):
             'elev_range': elev_range,
             'avg_lat': avg_lat
         }
-
-        # Calculate circle params for clipping features (same as terrain)
-        # Model dimensions in mm
-        lat_scaled = lat_range * scale_factor
-        lon_scaled = lon_range * lon_scale * scale_factor
-        circle_center_x = lon_scaled / 2
-        circle_center_z = lat_scaled / 2
-        # Use inscribed circle (min dimension / 2)
-        # When circular mode is enabled, the frontend fetches a square bounding box,
-        # so min == max and the circle will be complete with no missing data
-        circle_radius = min(lon_scaled, lat_scaled) / 2 if circular_model else None
 
         feature_meshes = []
 
@@ -98,9 +113,7 @@ def generate_mesh(elevation_data, features, options):
                 options.get('building_height_scale', 1.0),
                 address_location,
                 show_only_address_building,
-                circle_center_x,
-                circle_center_z,
-                circle_radius
+                shape_clipper
             )
             feature_meshes.extend(building_meshes)
 
@@ -113,9 +126,7 @@ def generate_mesh(elevation_data, features, options):
                 vertical_scale,
                 elev_params,
                 options.get('road_height', 0.2),  # Reduced offset to sit closer to terrain
-                circle_center_x,
-                circle_center_z,
-                circle_radius
+                shape_clipper
             )
             feature_meshes.extend(road_meshes)
 
@@ -127,9 +138,7 @@ def generate_mesh(elevation_data, features, options):
                 scale_factor,
                 vertical_scale,
                 elev_params,
-                circle_center_x,
-                circle_center_z,
-                circle_radius
+                shape_clipper
             )
             feature_meshes.extend(water_meshes)
 
@@ -143,9 +152,7 @@ def generate_mesh(elevation_data, features, options):
                 scale_factor,
                 vertical_scale,
                 elev_params,
-                circle_center_x,
-                circle_center_z,
-                circle_radius
+                shape_clipper
             )
 
         return {
@@ -169,8 +176,21 @@ def generate_mesh(elevation_data, features, options):
         raise Exception(f"Error generating mesh: {str(e)}")
 
 
-def generate_terrain_mesh(elevation_grid, lats, lons, bounds, scale_factor, vertical_scale, base_height, include_base, circular_model=False):
-    """Generate terrain mesh from elevation data."""
+def generate_terrain_mesh(elevation_grid, lats, lons, bounds, scale_factor, vertical_scale, base_height, include_base, shape_clipper=None):
+    """
+    Generate terrain mesh from elevation data.
+
+    Args:
+        elevation_grid: 2D numpy array of elevation values
+        lats: Array of latitude values
+        lons: Array of longitude values
+        bounds: Dict with north, south, east, west bounds
+        scale_factor: Scaling factor for coordinates
+        vertical_scale: Vertical exaggeration factor
+        base_height: Height of base platform in mm
+        include_base: Whether to include base and walls
+        shape_clipper: ShapeClipper instance for boundary clipping (None = no clipping)
+    """
     rows, cols = elevation_grid.shape
 
     # Average latitude for longitude scaling
@@ -201,26 +221,13 @@ def generate_terrain_mesh(elevation_grid, lats, lons, bounds, scale_factor, vert
 
     vertices = np.array(vertices)
 
-    # Calculate model center and radius for circular clipping
-    x_min, x_max = vertices[:, 0].min(), vertices[:, 0].max()
-    z_min, z_max = vertices[:, 2].min(), vertices[:, 2].max()
-    center_x = (x_min + x_max) / 2
-    center_z = (z_min + z_max) / 2
-    width = x_max - x_min
-    height = z_max - z_min
-    # Use inscribed circle (min dimension / 2)
-    # When circular mode is enabled, the frontend fetches a square bounding box,
-    # so min == max and the circle will be complete with no missing data
-    radius = min(width, height) / 2
-
-    # Create mask for vertices inside the circle (if circular mode)
-    if circular_model:
-        inside_circle = np.zeros(len(vertices), dtype=bool)
-        for i, v in enumerate(vertices):
-            dist = np.sqrt((v[0] - center_x) ** 2 + (v[2] - center_z) ** 2)
-            inside_circle[i] = dist <= radius
+    # Create mask for vertices inside the shape boundary (if shape clipper provided)
+    if shape_clipper:
+        x_coords = vertices[:, 0]
+        z_coords = vertices[:, 2]
+        inside_shape = shape_clipper.is_inside(x_coords, z_coords)
     else:
-        inside_circle = np.ones(len(vertices), dtype=bool)
+        inside_shape = np.ones(len(vertices), dtype=bool)
 
     # Generate faces (triangles)
     # Winding: CCW when viewed from above (+Y) so normals point up
@@ -233,11 +240,11 @@ def generate_terrain_mesh(elevation_grid, lats, lons, bounds, scale_factor, vert
             idx_down = idx + cols
             idx_diag = idx + cols + 1
 
-            if circular_model:
-                # Only include faces where all vertices are inside the circle
-                if inside_circle[idx] and inside_circle[idx_down] and inside_circle[idx_right]:
+            if shape_clipper:
+                # Only include faces where all vertices are inside the shape
+                if inside_shape[idx] and inside_shape[idx_down] and inside_shape[idx_right]:
                     faces.append([idx, idx_down, idx_right])
-                if inside_circle[idx_right] and inside_circle[idx_down] and inside_circle[idx_diag]:
+                if inside_shape[idx_right] and inside_shape[idx_down] and inside_shape[idx_diag]:
                     faces.append([idx_right, idx_down, idx_diag])
             else:
                 # Triangle 1: CCW from above
@@ -249,8 +256,8 @@ def generate_terrain_mesh(elevation_grid, lats, lons, bounds, scale_factor, vert
 
     # Add base if requested
     if include_base:
-        if circular_model:
-            base_vertices, base_faces, vertices = generate_circular_base(vertices, base_height, rows, cols, center_x, center_z, radius, inside_circle)
+        if shape_clipper:
+            base_vertices, base_faces = generate_shape_base(vertices, base_height, shape_clipper)
         else:
             base_vertices, base_faces = generate_base(vertices, base_height, rows, cols)
         vertices = np.vstack([vertices, base_vertices])
@@ -345,6 +352,80 @@ def generate_base(vertices, base_height, rows, cols):
             base_faces.append([idx + 1, idx + cols + 1, idx + cols])
 
     return base_vertices, np.array(base_faces)
+
+
+def generate_shape_base(vertices, base_height, shape_clipper):
+    """
+    Generate watertight base for any shape using shape clipper.
+
+    Creates a smooth wall that follows the terrain contour and a bottom face.
+
+    Args:
+        vertices: Terrain vertices array
+        base_height: Height of base platform
+        shape_clipper: ShapeClipper instance for wall generation
+
+    Returns:
+        tuple: (base_vertices, base_faces) as numpy arrays
+    """
+    base_vertices = []
+    base_faces = []
+
+    n = len(vertices)  # Number of terrain vertices
+
+    # Create elevation interpolation function for the wall
+    def terrain_elevation_func(x, z):
+        """Interpolate elevation at (x, z) from nearest terrain vertices."""
+        # Find closest terrain vertex (simple nearest neighbor)
+        min_dist = float('inf')
+        closest_elev = -base_height
+
+        for v in vertices:
+            vx, vy, vz = v
+            dist_sq = (vx - x)**2 + (vz - z)**2
+            if dist_sq < min_dist:
+                min_dist = dist_sq
+                closest_elev = vy
+
+        return closest_elev
+
+    # Generate wall vertices using shape clipper
+    wall_vertices, wall_faces = shape_clipper.generate_wall_vertices(
+        terrain_elevation_func,
+        base_height
+    )
+
+    # Offset wall face indices by number of terrain vertices
+    wall_faces_offset = wall_faces + n
+
+    # Add wall vertices to base
+    base_vertices.extend(wall_vertices.tolist())
+
+    # Add wall faces
+    base_faces.extend(wall_faces_offset.tolist())
+
+    # Create center point for bottom face
+    center_x = shape_clipper.center_x
+    center_z = shape_clipper.center_z
+    center_bottom_idx = n + len(wall_vertices)
+    base_vertices.append([center_x, -base_height, center_z])
+
+    # Create bottom face using fan triangulation from center
+    # Wall vertices alternate: top, bottom, top, bottom, ...
+    # We need to connect bottom vertices in a circular pattern
+    num_wall_segments = len(wall_vertices) // 2
+
+    for i in range(num_wall_segments):
+        next_i = (i + 1) % num_wall_segments
+
+        # Bottom vertices are at odd indices: 1, 3, 5, ...
+        bottom_i = n + i * 2 + 1
+        bottom_next = n + next_i * 2 + 1
+
+        # Fan triangle: center, next_bottom, current_bottom (CCW from below)
+        base_faces.append([center_bottom_idx, bottom_next, bottom_i])
+
+    return np.array(base_vertices), np.array(base_faces, dtype=np.int32)
 
 
 def generate_circular_base(vertices, base_height, rows, cols, center_x, center_z, radius, inside_circle):
@@ -542,8 +623,9 @@ def create_box(x1, x2, y1, y2, z1, z2):
     return {'vertices': vertices, 'faces': faces}
 
 
-def generate_building_meshes(buildings, elevation_data, bounds, scale_factor, vertical_scale, elev_params, height_scale, address_location=None, show_only_address_building=False, circle_center_x=None, circle_center_z=None, circle_radius=None):
-    """Generate 3D meshes for buildings as simple boxes from bounding boxes.
+def generate_building_meshes(buildings, elevation_data, bounds, scale_factor, vertical_scale, elev_params, height_scale, address_location=None, show_only_address_building=False, shape_clipper=None):
+    """
+    Generate 3D meshes for buildings as simple boxes from bounding boxes.
 
     Args:
         buildings: List of building features
@@ -555,9 +637,10 @@ def generate_building_meshes(buildings, elevation_data, bounds, scale_factor, ve
         height_scale: Building height multiplier
         address_location: Optional dict with 'lat' and 'lon' of highlighted address
         show_only_address_building: If True, only return the building at the address
-        circle_center_x: X coordinate of circle center (for circular clipping)
-        circle_center_z: Z coordinate of circle center (for circular clipping)
-        circle_radius: Radius of circle (None = no clipping)
+        shape_clipper: ShapeClipper for boundary clipping (None = no clipping)
+
+    Returns:
+        list: Building mesh dictionaries
     """
     meshes = []
     min_elev = elev_params['min_elev']
@@ -639,18 +722,17 @@ def generate_building_meshes(buildings, elevation_data, bounds, scale_factor, ve
         z1 = (bounds['north'] - max_lat) * scale_factor
         z2 = (bounds['north'] - min_lat) * scale_factor
 
-        # Check if building is fully within circle (if circular clipping enabled)
-        # Check all 4 corners - if any corner is outside the circle, skip the building
-        if circle_radius is not None:
+        # Check if building is within shape boundary
+        # Check all 4 corners - if any corner is outside, skip the building
+        if shape_clipper:
             corners = [(x1, z1), (x1, z2), (x2, z1), (x2, z2)]
             outside = False
             for cx, cz in corners:
-                dist = np.sqrt((cx - circle_center_x) ** 2 + (cz - circle_center_z) ** 2)
-                if dist > circle_radius:
+                if not shape_clipper.is_inside(cx, cz):
                     outside = True
                     break
             if outside:
-                continue  # Skip buildings that extend outside the circle
+                continue  # Skip buildings that extend outside the shape
 
         # Get base elevation at center of building
         center_lat = (min_lat + max_lat) / 2
@@ -674,8 +756,23 @@ def generate_building_meshes(buildings, elevation_data, bounds, scale_factor, ve
     return meshes
 
 
-def generate_road_meshes(roads, elevation_data, bounds, scale_factor, vertical_scale, elev_params, road_height, circle_center_x=None, circle_center_z=None, circle_radius=None):
-    """Generate 3D meshes for roads."""
+def generate_road_meshes(roads, elevation_data, bounds, scale_factor, vertical_scale, elev_params, road_height, shape_clipper=None):
+    """
+    Generate 3D meshes for roads.
+
+    Args:
+        roads: List of road features
+        elevation_data: Elevation grid data
+        bounds: Geographic bounds
+        scale_factor: Coordinate scaling factor
+        vertical_scale: Vertical exaggeration
+        elev_params: Elevation normalization parameters
+        road_height: Height offset above terrain
+        shape_clipper: ShapeClipper for boundary clipping (None = no clipping)
+
+    Returns:
+        list: Road mesh dictionaries
+    """
     meshes = []
     min_elev = elev_params['min_elev']
     elev_range = elev_params['elev_range']
@@ -686,9 +783,10 @@ def generate_road_meshes(roads, elevation_data, bounds, scale_factor, vertical_s
         if len(coords) < 2:
             continue
 
-        # Convert coordinates to model space (Three.js: X=east-west, Y=up, Z=north-south)
-        # Only include points within bounds and circle
-        points = []
+        # Convert ALL coordinates to model space first
+        points_xz = []  # (x, z) pairs for clipping
+        points_xyz = []  # Full (x, y, z) points
+
         for coord in coords:
             lat = coord['lat']
             lon = coord['lon']
@@ -703,39 +801,93 @@ def generate_road_meshes(roads, elevation_data, bounds, scale_factor, vertical_s
             x = (lon - bounds['west']) * scale_factor * np.cos(np.radians(avg_lat))
             z = (bounds['north'] - lat) * scale_factor
 
-            # Skip points outside circle (if circular clipping enabled)
-            if circle_radius is not None:
-                dist = np.sqrt((x - circle_center_x) ** 2 + (z - circle_center_z) ** 2)
-                if dist > circle_radius:
-                    continue
-
             # Get normalized elevation and raise slightly above terrain
             raw_elev = interpolate_elevation(lat, lon, elevation_data)
             y = ((raw_elev - min_elev) / elev_range) * 20.0 * vertical_scale + road_height
 
-            points.append([x, y, z])
+            points_xz.append((x, z))
+            points_xyz.append([x, y, z])
 
-        if len(points) < 2:
+        if len(points_xz) < 2:
             continue
 
-        points = np.array(points)
+        # Clip path to shape boundary (preserving continuity)
+        if shape_clipper:
+            clipped_segments = shape_clipper.clip_linestring(points_xz)
 
-        # Create road as line with width
-        road_mesh = create_road_strip(points, width=1.0)  # Thinner roads
+            # Process each clipped segment
+            for segment in clipped_segments:
+                if len(segment) < 2:
+                    continue
 
-        meshes.append({
-            'type': 'road',
-            'id': road['id'],
-            'road_type': road.get('road_type', 'unknown'),
-            'vertices': road_mesh['vertices'],
-            'faces': road_mesh['faces']
-        })
+                # Find corresponding 3D points (with elevation)
+                segment_points_3d = []
+                for sx, sz in segment:
+                    # Find closest original point or interpolate
+                    # For simplicity, find nearest point
+                    min_dist = float('inf')
+                    closest_point = None
+                    for px, py, pz in points_xyz:
+                        dist_sq = (px - sx)**2 + (pz - sz)**2
+                        if dist_sq < min_dist:
+                            min_dist = dist_sq
+                            closest_point = [px, py, pz]
+
+                    if closest_point:
+                        # Use the segment's x, z but preserve the elevation from nearest point
+                        segment_points_3d.append([sx, closest_point[1], sz])
+
+                if len(segment_points_3d) < 2:
+                    continue
+
+                segment_points_3d = np.array(segment_points_3d)
+
+                # Create road strip for this segment
+                road_mesh = create_road_strip(segment_points_3d, width=1.0)
+
+                meshes.append({
+                    'type': 'road',
+                    'id': road['id'],
+                    'name': road.get('name', f"road_{road['id']}"),
+                    'road_type': road.get('road_type', 'unknown'),
+                    'vertices': road_mesh['vertices'],
+                    'faces': road_mesh['faces']
+                })
+        else:
+            # No clipping - use all points
+            points_xyz = np.array(points_xyz)
+
+            # Create road as line with width
+            road_mesh = create_road_strip(points_xyz, width=1.0)
+
+            meshes.append({
+                'type': 'road',
+                'id': road['id'],
+                'name': road.get('name', f"road_{road['id']}"),
+                'road_type': road.get('road_type', 'unknown'),
+                'vertices': road_mesh['vertices'],
+                'faces': road_mesh['faces']
+            })
 
     return meshes
 
 
-def generate_water_meshes(water_features, elevation_data, bounds, scale_factor, vertical_scale, elev_params, circle_center_x=None, circle_center_z=None, circle_radius=None):
-    """Generate 3D meshes for water bodies."""
+def generate_water_meshes(water_features, elevation_data, bounds, scale_factor, vertical_scale, elev_params, shape_clipper=None):
+    """
+    Generate 3D meshes for water bodies.
+
+    Args:
+        water_features: List of water features
+        elevation_data: Elevation grid data
+        bounds: Geographic bounds
+        scale_factor: Coordinate scaling factor
+        vertical_scale: Vertical exaggeration
+        elev_params: Elevation normalization parameters
+        shape_clipper: ShapeClipper for boundary clipping (None = no clipping)
+
+    Returns:
+        list: Water mesh dictionaries
+    """
     meshes = []
     min_elev = elev_params['min_elev']
     elev_range = elev_params['elev_range']
@@ -768,7 +920,8 @@ def generate_water_meshes(water_features, elevation_data, bounds, scale_factor, 
         # Ensure water is at least at Y=0.2 so it's visible on the surface
         water_y = max(0.2, water_y - 0.3)  # Slight offset to sit in terrain, but never below Y=0.2
 
-        points = []
+        # Convert all coordinates to model space
+        points_xz = []  # (x, z) for clipping
         for coord in coords:
             lat = coord['lat']
             lon = coord['lon']
@@ -781,20 +934,27 @@ def generate_water_meshes(water_features, elevation_data, bounds, scale_factor, 
             x = (lon - bounds['west']) * scale_factor * np.cos(np.radians(avg_lat))
             z = (bounds['north'] - lat) * scale_factor
 
-            # Skip points outside circle (if circular clipping enabled)
-            if circle_radius is not None:
-                dist = np.sqrt((x - circle_center_x) ** 2 + (z - circle_center_z) ** 2)
-                if dist > circle_radius:
-                    continue
+            points_xz.append((x, z))
 
-            # Water at flat level (constant Y for entire polygon)
-            points.append([x, water_y, z])
+        # Clip polygon to shape boundary
+        if shape_clipper:
+            clipped_polygon = shape_clipper.clip_polygon(points_xz)
+            if clipped_polygon is None or len(clipped_polygon) < 3:
+                continue
 
-        # Skip if not enough points after clipping
+            # Create 3D points with water elevation
+            points_3d = []
+            for x, z in clipped_polygon:
+                points_3d.append([x, water_y, z])
+
+            points = np.array(points_3d)
+        else:
+            # No clipping - use all points
+            points = np.array([[x, water_y, z] for x, z in points_xz])
+
+        # Skip if not enough points
         if len(points) < 3:
             continue
-
-        points = np.array(points)
 
         # Create solid water body with thickness for 3D printing
         water_mesh = create_solid_polygon(points, thickness=0.5)
@@ -810,7 +970,7 @@ def generate_water_meshes(water_features, elevation_data, bounds, scale_factor, 
     return meshes
 
 
-def generate_gpx_track_mesh(gpx_tracks, elevation_data, bounds, scale_factor, vertical_scale, elev_params, circle_center_x=None, circle_center_z=None, circle_radius=None):
+def generate_gpx_track_mesh(gpx_tracks, elevation_data, bounds, scale_factor, vertical_scale, elev_params, shape_clipper=None):
     """
     Generate 3D mesh for GPX track as a tube/ribbon following the terrain.
 
@@ -821,9 +981,7 @@ def generate_gpx_track_mesh(gpx_tracks, elevation_data, bounds, scale_factor, ve
         scale_factor: Scale factor for model
         vertical_scale: Vertical exaggeration
         elev_params: Elevation normalization params
-        circle_center_x: X coordinate of circle center (for circular clipping)
-        circle_center_z: Z coordinate of circle center (for circular clipping)
-        circle_radius: Radius of circle (None = no clipping)
+        shape_clipper: ShapeClipper for boundary clipping (None = no clipping)
 
     Returns:
         dict: Mesh data with vertices and faces
@@ -832,7 +990,9 @@ def generate_gpx_track_mesh(gpx_tracks, elevation_data, bounds, scale_factor, ve
     elev_range = elev_params['elev_range']
     avg_lat = elev_params['avg_lat']
 
-    all_points = []
+    # Convert all track points to model space first
+    all_points_xz = []
+    all_points_xyz = []
 
     for track in gpx_tracks:
         track_points = track.get('points', [])
@@ -860,21 +1020,45 @@ def generate_gpx_track_mesh(gpx_tracks, elevation_data, bounds, scale_factor, ve
             x = (lon - bounds['west']) * scale_factor * np.cos(np.radians(avg_lat))
             z = (bounds['north'] - lat) * scale_factor
 
-            # Skip points outside circle (if circular clipping enabled)
-            if circle_radius is not None:
-                dist = np.sqrt((x - circle_center_x) ** 2 + (z - circle_center_z) ** 2)
-                if dist > circle_radius:
-                    continue
-
             # Elevation - sit above roads (roads are at +0.2, so GPX at +0.5)
             y = ((raw_elev - min_elev) / elev_range) * 20.0 * vertical_scale + 0.5  # Above roads
 
-            all_points.append([x, y, z])
+            all_points_xz.append((x, z))
+            all_points_xyz.append([x, y, z])
 
-    if len(all_points) < 2:
+    if len(all_points_xz) < 2:
         return None
 
-    points = np.array(all_points)
+    # Clip track to shape boundary (preserving continuity)
+    if shape_clipper:
+        clipped_segments = shape_clipper.clip_linestring(all_points_xz)
+
+        # Combine all segments for GPX track (or process separately if needed)
+        all_clipped_points = []
+        for segment in clipped_segments:
+            if len(segment) < 2:
+                continue
+
+            # Find corresponding 3D points
+            for sx, sz in segment:
+                min_dist = float('inf')
+                closest_point = None
+                for px, py, pz in all_points_xyz:
+                    dist_sq = (px - sx)**2 + (pz - sz)**2
+                    if dist_sq < min_dist:
+                        min_dist = dist_sq
+                        closest_point = [px, py, pz]
+
+                if closest_point:
+                    all_clipped_points.append([sx, closest_point[1], sz])
+
+        if len(all_clipped_points) < 2:
+            return None
+
+        points = np.array(all_clipped_points)
+    else:
+        # No clipping - use all points
+        points = np.array(all_points_xyz)
 
     # Create track as a 3D-printable strip (wider and thicker than roads)
     track_mesh = create_road_strip(points, width=2.5, thickness=0.5)
@@ -1320,8 +1504,8 @@ def export_to_stl(mesh_data, filepath):
         # Add terrain mesh
         terrain = mesh_data.get('terrain', {})
         if terrain:
-            vertices = np.array(terrain['vertices'])
-            faces = np.array(terrain['faces'])
+            vertices = np.array(terrain['vertices'], dtype=np.float64)
+            faces = np.array(terrain['faces'], dtype=np.int32)
 
             all_vertices.append(vertices)
             all_faces.append(faces + vertex_offset)
@@ -1329,8 +1513,8 @@ def export_to_stl(mesh_data, filepath):
 
         # Add feature meshes
         for feature in mesh_data.get('features', []):
-            vertices = np.array(feature['vertices'])
-            faces = np.array(feature['faces'])
+            vertices = np.array(feature['vertices'], dtype=np.float64)
+            faces = np.array(feature['faces'], dtype=np.int32)
 
             all_vertices.append(vertices)
             all_faces.append(faces + vertex_offset)
@@ -1339,8 +1523,8 @@ def export_to_stl(mesh_data, filepath):
         # Add GPX track mesh if present
         gpx_track = mesh_data.get('gpx_track', {})
         if gpx_track and gpx_track.get('vertices') and gpx_track.get('faces'):
-            vertices = np.array(gpx_track['vertices'])
-            faces = np.array(gpx_track['faces'])
+            vertices = np.array(gpx_track['vertices'], dtype=np.float64)
+            faces = np.array(gpx_track['faces'], dtype=np.int32)
 
             all_vertices.append(vertices)
             all_faces.append(faces + vertex_offset)
@@ -1413,14 +1597,14 @@ def export_to_3mf(mesh_data, filepath):
             features_by_type[ftype] = {'vertices': [], 'faces': [], 'vertex_offset': 0}
 
         verts = feature['vertices']
-        fcs = feature['faces']
+        fcs = np.array(feature['faces'], dtype=np.int32)
 
-        # Offset faces for combined mesh
+        # Offset faces for combined mesh using numpy array arithmetic
         offset = features_by_type[ftype]['vertex_offset']
-        offset_faces = [[f[0] + offset, f[1] + offset, f[2] + offset] for f in fcs]
+        offset_faces = fcs + offset
 
         features_by_type[ftype]['vertices'].extend(verts)
-        features_by_type[ftype]['faces'].extend(offset_faces)
+        features_by_type[ftype]['faces'].extend(offset_faces.tolist())
         features_by_type[ftype]['vertex_offset'] += len(verts)
 
     for ftype, data in features_by_type.items():
