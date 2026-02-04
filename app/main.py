@@ -16,6 +16,7 @@ from utils.gpx_parser import parse_gpx_file
 from utils.elevation_fetcher import fetch_elevation_data
 from utils.osm_fetcher import fetch_osm_features
 from utils.mesh_generator import generate_mesh, export_to_stl, export_to_3mf
+from utils.mesh_validator import MeshValidator
 from utils.geocoder import geocode_address
 
 app = Flask(__name__)
@@ -169,9 +170,14 @@ def generate_model():
         # Generate 3D mesh
         mesh_data = generate_mesh(elevation, features, options)
 
+        # Validate and auto-fix mesh for 3D printability
+        validator = MeshValidator()
+        validation_result = validator.validate_and_fix(mesh_data)
+
         return jsonify({
             'success': True,
-            'mesh': mesh_data
+            'mesh': mesh_data,
+            'validation': validation_result
         })
 
     except Exception as e:

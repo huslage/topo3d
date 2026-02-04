@@ -1239,7 +1239,13 @@
                     currentMesh = result.mesh;
                     renderMesh(currentMesh);
                     updateObjectList(currentMesh);
-                    showStatus('Model generated successfully!', 'success');
+
+                    // Display validation results
+                    if (result.validation) {
+                        displayValidationResults(result.validation);
+                    } else {
+                        showStatus('Model generated successfully!', 'success');
+                    }
                 } else {
                     showStatus('Error: ' + result.error, 'error');
                 }
@@ -1248,6 +1254,36 @@
             } finally {
                 showLoading(false);
             }
+        }
+
+        // Display mesh validation results
+        function displayValidationResults(validation) {
+            let message = 'Model generated successfully!';
+            let messageType = 'success';
+
+            // Show fixes that were applied
+            if (validation.fixes_applied && validation.fixes_applied.length > 0) {
+                message += '\n\nAuto-fixes applied:';
+                validation.fixes_applied.forEach(fix => {
+                    message += `\n- ${fix}`;
+                });
+                messageType = 'info';
+            }
+
+            // Show warnings
+            if (validation.warnings && validation.warnings.length > 0) {
+                message += '\n\nWarnings:';
+                validation.warnings.forEach(warning => {
+                    message += `\n- ${warning}`;
+                });
+
+                if (!validation.is_printable) {
+                    message += '\n\nModel may have printability issues!';
+                    messageType = 'error';
+                }
+            }
+
+            showStatus(message, messageType);
         }
 
         // Generate descriptive display name for a feature
