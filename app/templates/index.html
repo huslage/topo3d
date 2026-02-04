@@ -423,9 +423,14 @@
                         <input type="checkbox" id="include-base" checked>
                         <label for="include-base">Include Base (for 3D printing)</label>
                     </div>
-                    <div class="checkbox-item">
-                        <input type="checkbox" id="circular-model">
-                        <label for="circular-model">Circular Model</label>
+                    <div style="margin: 10px 0;">
+                        <label for="model-shape" style="display: block; margin-bottom: 5px; font-weight: 500;">Model Shape</label>
+                        <select id="model-shape" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                            <option value="square">Square</option>
+                            <option value="circle">Circle</option>
+                            <option value="rectangle">Rectangle (Auto Aspect)</option>
+                            <option value="hexagon">Hexagon</option>
+                        </select>
                     </div>
                 </div>
 
@@ -1058,7 +1063,7 @@
         }
 
         // Track whether last fetch was for circular model (to detect changes)
-        let lastFetchWasCircular = false;
+        let lastFetchShape = 'square';
 
         // Generate 3D model
         async function generateModel() {
@@ -1067,21 +1072,21 @@
                 return;
             }
 
-            const isCircular = document.getElementById('circular-model').checked;
+            const modelShape = document.getElementById('model-shape').value;
 
-            // Need refetch if circular mode changed since last fetch
-            const circularChanged = isCircular !== lastFetchWasCircular;
+            // Need refetch if shape changed since last fetch
+            const shapeChanged = modelShape !== lastFetchShape;
 
-            // Fetch data if needed (first time, bounds changed, or circular mode changed)
-            if (gpxData && (gpxData.needsRefetch || !elevationData || circularChanged)) {
+            // Fetch data if needed (first time, bounds changed, or shape changed)
+            if (gpxData && (gpxData.needsRefetch || !elevationData || shapeChanged)) {
                 showStatus('Fetching elevation and map data...', 'info');
                 showLoading(true);
                 try {
-                    // Use square bounds for circular model, regular bounds otherwise
+                    // Use square bounds for circle/hexagon, regular bounds otherwise
                     let fetchBounds = gpxData.bounds;
-                    if (isCircular) {
+                    if (modelShape === 'circle' || modelShape === 'hexagon') {
                         fetchBounds = getSquareBoundsForCircle(gpxData.bounds);
-                        console.log('Circular mode: expanding to square bounds', fetchBounds);
+                        console.log(`${modelShape} shape: expanding to square bounds`, fetchBounds);
                     }
 
                     await Promise.all([
@@ -1089,7 +1094,7 @@
                         fetchOSMFeatures(fetchBounds)
                     ]);
                     gpxData.needsRefetch = false;
-                    lastFetchWasCircular = isCircular;
+                    lastFetchShape = modelShape;
                 } catch (error) {
                     showStatus('Error fetching data: ' + error.message, 'error');
                     showLoading(false);
@@ -1110,7 +1115,7 @@
                 model_width: parseFloat(document.getElementById('model-width').value),
                 base_height: parseFloat(document.getElementById('base-height').value),
                 include_base: document.getElementById('include-base').checked,
-                circular_model: document.getElementById('circular-model').checked,
+                model_shape: document.getElementById('model-shape').value,
                 gpx_tracks: gpxData ? gpxData.tracks : [],  // Include GPX tracks for rendering
                 address_location: geocodedLocation,  // Pass the geocoded address location
                 show_only_address_building: showOnlyAddressBuilding  // Whether to show only the address building

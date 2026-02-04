@@ -6,6 +6,7 @@ import io
 from stl import mesh
 from scipy.spatial import Delaunay
 from .shape_clipper import CircleClipper, SquareClipper, RectangleClipper, HexagonClipper
+from .building_shapes import BuildingShapeGenerator
 
 
 def generate_mesh(elevation_data, features, options):
@@ -647,6 +648,9 @@ def generate_building_meshes(buildings, elevation_data, bounds, scale_factor, ve
     elev_range = elev_params['elev_range']
     avg_lat = elev_params['avg_lat']
 
+    # Initialize building shape generator
+    building_shape_gen = BuildingShapeGenerator()
+
     # Find the building closest to the address location
     address_building_id = None
     if address_location:
@@ -740,8 +744,17 @@ def generate_building_meshes(buildings, elevation_data, bounds, scale_factor, ve
         raw_elev = interpolate_elevation(center_lat, center_lon, elevation_data)
         base_y = ((raw_elev - min_elev) / elev_range) * 20.0 * vertical_scale
 
-        # Create simple box mesh
-        building_mesh = create_box(x1, x2, base_y, base_y + height, z1, z2)
+        # Determine building shape based on tags
+        building_tags = building.get('tags', {})
+        shape_type = building_shape_gen.determine_building_shape(building_tags)
+
+        # Generate building mesh with appropriate shape
+        # TODO: custom_color parameter will be passed from options in future update
+        building_mesh = building_shape_gen.generate_building_mesh(
+            x1, x2, base_y, base_y + height, z1, z2,
+            shape_type=shape_type,
+            custom_color=None  # Will be populated from options in later integration
+        )
 
         meshes.append({
             'type': 'building',
@@ -750,7 +763,8 @@ def generate_building_meshes(buildings, elevation_data, bounds, scale_factor, ve
             'building_type': building.get('building_type', 'yes'),
             'vertices': building_mesh['vertices'],
             'faces': building_mesh['faces'],
-            'is_address_building': is_address_building
+            'is_address_building': is_address_building,
+            'custom_color': building_mesh.get('custom_color')
         })
 
     return meshes
