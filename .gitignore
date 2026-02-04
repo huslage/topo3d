@@ -50,3 +50,6 @@ exports/*.3mf
 # Temporary files
 *.tmp
 temp/
+
+# Git worktrees
+.worktrees/
