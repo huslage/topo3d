@@ -334,6 +334,82 @@
             font-weight: 600;
             color: #667eea;
         }
+
+        /* Color Picker Modal */
+        .color-picker-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .color-picker-modal.active {
+            display: flex;
+        }
+
+        .color-picker-content {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            max-width: 400px;
+            width: 90%;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+
+        .color-picker-content h3 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 1.2em;
+        }
+
+        .color-picker-content p {
+            color: #666;
+            margin-bottom: 20px;
+            font-size: 0.95em;
+        }
+
+        .color-input-group {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .color-input-group input[type="color"] {
+            width: 80px;
+            height: 50px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        .color-input-group input[type="text"] {
+            flex: 1;
+        }
+
+        .color-picker-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .color-picker-actions button {
+            margin-top: 0;
+        }
+
+        .building-color-indicator {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 2px solid #ddd;
+            cursor: pointer;
+            margin-left: 8px;
+        }
     </style>
 </head>
 <body>
@@ -488,6 +564,25 @@
         </div>
     </div>
 
+    <!-- Color Picker Modal -->
+    <div id="color-picker-modal" class="color-picker-modal">
+        <div class="color-picker-content">
+            <h3>🎨 Customize Building Color</h3>
+            <p id="color-picker-building-name">Select a color for this building</p>
+
+            <div class="color-input-group">
+                <input type="color" id="building-color-picker" value="#aaaaaa">
+                <input type="text" id="building-color-hex" value="#aaaaaa" placeholder="#RRGGBB" maxlength="7">
+            </div>
+
+            <div class="color-picker-actions">
+                <button onclick="applyBuildingColor()" class="success">Apply</button>
+                <button onclick="removeBuildingColor()" style="background: #e74c3c;">Remove Custom</button>
+                <button onclick="closeColorPicker()" class="secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <script>
@@ -500,6 +595,8 @@
         let currentMesh = null;
         let selectedObjects = new Set();  // Multiple selection support
         let objectsList = [];
+        let customBuildingColors = {};  // Store custom colors: { buildingId: hexColor }
+        let currentColorPickerBuilding = null;  // Currently selected building for color picker
 
         // Selection in 3D view
         let raycaster = new THREE.Raycaster();
@@ -1118,7 +1215,8 @@
                 model_shape: document.getElementById('model-shape').value,
                 gpx_tracks: gpxData ? gpxData.tracks : [],  // Include GPX tracks for rendering
                 address_location: geocodedLocation,  // Pass the geocoded address location
-                show_only_address_building: showOnlyAddressBuilding  // Whether to show only the address building
+                show_only_address_building: showOnlyAddressBuilding,  // Whether to show only the address building
+                custom_building_colors: customBuildingColors  // Pass custom building colors
             };
 
             try {
@@ -1411,10 +1509,23 @@
                 };
                 const typeLabel = typeLabels[obj.type] || obj.type;
 
+                // Add color picker button for buildings
+                let colorPickerButton = '';
+                if (obj.type === 'building' && obj.id) {
+                    const customColor = customBuildingColors[obj.id] || badgeColor;
+                    colorPickerButton = `
+                        <div class="building-color-indicator"
+                             style="background: ${customColor};"
+                             onclick="event.stopPropagation(); openColorPicker(${index}, '${obj.id}', '${obj.name.replace(/'/g, "\\'")}')">
+                        </div>
+                    `;
+                }
+
                 item.innerHTML = `
                     <span class="object-info">
                         <span class="type-badge" style="background: ${badgeColor}; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.75em; margin-right: 6px;">${typeLabel}</span>
                         <span class="object-name">${obj.name}</span>
+                        ${colorPickerButton}
                     </span>
                     <button onclick="event.stopPropagation(); deleteObject(${index})">X</button>
                 `;
@@ -1432,6 +1543,83 @@
             });
 
             updateSelectionCount();
+        }
+
+        // Color Picker Functions
+        function openColorPicker(buildingIndex, buildingId, buildingName) {
+            currentColorPickerBuilding = { index: buildingIndex, id: buildingId, name: buildingName };
+
+            // Set current color or default
+            const currentColor = customBuildingColors[buildingId] || '#aaaaaa';
+
+            document.getElementById('building-color-picker').value = currentColor;
+            document.getElementById('building-color-hex').value = currentColor;
+            document.getElementById('color-picker-building-name').textContent = `Customize color for: ${buildingName}`;
+
+            // Show modal
+            document.getElementById('color-picker-modal').classList.add('active');
+
+            // Sync color picker and hex input
+            const colorPicker = document.getElementById('building-color-picker');
+            const hexInput = document.getElementById('building-color-hex');
+
+            colorPicker.oninput = () => {
+                hexInput.value = colorPicker.value;
+            };
+
+            hexInput.oninput = () => {
+                if (/^#[0-9A-F]{6}$/i.test(hexInput.value)) {
+                    colorPicker.value = hexInput.value;
+                }
+            };
+        }
+
+        function closeColorPicker() {
+            document.getElementById('color-picker-modal').classList.remove('active');
+            currentColorPickerBuilding = null;
+        }
+
+        function applyBuildingColor() {
+            if (!currentColorPickerBuilding) return;
+
+            const color = document.getElementById('building-color-picker').value;
+            const buildingId = currentColorPickerBuilding.id;
+
+            // Store custom color
+            customBuildingColors[buildingId] = color;
+
+            // Update the building color in 3D view
+            const buildingObj = objectsList[currentColorPickerBuilding.index];
+            if (buildingObj && buildingObj.object) {
+                buildingObj.object.material.color.setStyle(color);
+            }
+
+            // Close modal and refresh object list
+            closeColorPicker();
+            updateObjectList(currentMesh);
+
+            showStatus('Building color updated! Regenerate model to apply in export.', 'success');
+        }
+
+        function removeBuildingColor() {
+            if (!currentColorPickerBuilding) return;
+
+            const buildingId = currentColorPickerBuilding.id;
+
+            // Remove custom color
+            delete customBuildingColors[buildingId];
+
+            // Reset to default color
+            const buildingObj = objectsList[currentColorPickerBuilding.index];
+            if (buildingObj && buildingObj.object) {
+                buildingObj.object.material.color.setHex(0xaaaaaa);
+            }
+
+            // Close modal and refresh object list
+            closeColorPicker();
+            updateObjectList(currentMesh);
+
+            showStatus('Building color reset to default.', 'info');
         }
 
         // Toggle object selection (multi-select)

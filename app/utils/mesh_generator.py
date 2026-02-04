@@ -103,6 +103,7 @@ def generate_mesh(elevation_data, features, options):
             # Get address location options
             address_location = options.get('address_location')
             show_only_address_building = options.get('show_only_address_building', False)
+            custom_building_colors = options.get('custom_building_colors', {})
 
             building_meshes = generate_building_meshes(
                 features['buildings'],
@@ -114,7 +115,8 @@ def generate_mesh(elevation_data, features, options):
                 options.get('building_height_scale', 1.0),
                 address_location,
                 show_only_address_building,
-                shape_clipper
+                shape_clipper,
+                custom_building_colors
             )
             feature_meshes.extend(building_meshes)
 
@@ -624,9 +626,9 @@ def create_box(x1, x2, y1, y2, z1, z2):
     return {'vertices': vertices, 'faces': faces}
 
 
-def generate_building_meshes(buildings, elevation_data, bounds, scale_factor, vertical_scale, elev_params, height_scale, address_location=None, show_only_address_building=False, shape_clipper=None):
+def generate_building_meshes(buildings, elevation_data, bounds, scale_factor, vertical_scale, elev_params, height_scale, address_location=None, show_only_address_building=False, shape_clipper=None, custom_building_colors=None):
     """
-    Generate 3D meshes for buildings as simple boxes from bounding boxes.
+    Generate 3D meshes for buildings with customizable shapes and colors.
 
     Args:
         buildings: List of building features
@@ -639,10 +641,13 @@ def generate_building_meshes(buildings, elevation_data, bounds, scale_factor, ve
         address_location: Optional dict with 'lat' and 'lon' of highlighted address
         show_only_address_building: If True, only return the building at the address
         shape_clipper: ShapeClipper for boundary clipping (None = no clipping)
+        custom_building_colors: Dict mapping building IDs to custom hex colors
 
     Returns:
         list: Building mesh dictionaries
     """
+    if custom_building_colors is None:
+        custom_building_colors = {}
     meshes = []
     min_elev = elev_params['min_elev']
     elev_range = elev_params['elev_range']
@@ -748,12 +753,15 @@ def generate_building_meshes(buildings, elevation_data, bounds, scale_factor, ve
         building_tags = building.get('tags', {})
         shape_type = building_shape_gen.determine_building_shape(building_tags)
 
-        # Generate building mesh with appropriate shape
-        # TODO: custom_color parameter will be passed from options in future update
+        # Get custom color for this building (if any)
+        building_id_str = str(building['id'])
+        custom_color = custom_building_colors.get(building_id_str)
+
+        # Generate building mesh with appropriate shape and color
         building_mesh = building_shape_gen.generate_building_mesh(
             x1, x2, base_y, base_y + height, z1, z2,
             shape_type=shape_type,
-            custom_color=None  # Will be populated from options in later integration
+            custom_color=custom_color
         )
 
         meshes.append({
@@ -1572,11 +1580,26 @@ def export_to_stl(mesh_data, filepath):
         raise Exception(f"Error exporting to STL: {str(e)}")
 
 
+def hex_to_rgb(hex_color):
+    """
+    Convert hex color string to RGB tuple.
+
+    Args:
+        hex_color: Hex color string (e.g., "#aabbcc" or "aabbcc")
+
+    Returns:
+        tuple: (r, g, b) values 0-255
+    """
+    hex_color = hex_color.lstrip('#')
+    return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+
+
 def export_to_3mf(mesh_data, filepath):
     """
     Export mesh to 3MF format with separate objects for each feature type.
 
     3MF supports multiple objects, colors, and proper units (mm).
+    Buildings with custom colors are exported as separate objects with their custom colors.
 
     Args:
         mesh_data: Dict with terrain and feature meshes
@@ -1600,13 +1623,24 @@ def export_to_3mf(mesh_data, filepath):
     if terrain and terrain.get('vertices'):
         objects.append(('Terrain', terrain['vertices'], terrain['faces'], COLORS['terrain']))
 
-    # Add features grouped by type
+    # Add features grouped by type (except buildings with custom colors)
     features_by_type = {}
     for feature in mesh_data.get('features', []):
         ftype = feature.get('type', 'unknown')
+
+        # Check if this building has a custom color
+        if ftype == 'building' and feature.get('custom_color'):
+            # Export building with custom color as separate object
+            hex_color = feature['custom_color']
+            rgb_color = hex_to_rgb(hex_color)
+            building_name = feature.get('name', f"Building {feature.get('id', 'Unknown')}")
+            objects.append((building_name, feature['vertices'], feature['faces'], rgb_color))
+            continue
+
         # Check if it's the address building
         if feature.get('is_address_building'):
             ftype = 'address_building'
+
         if ftype not in features_by_type:
             features_by_type[ftype] = {'vertices': [], 'faces': [], 'vertex_offset': 0}
 
