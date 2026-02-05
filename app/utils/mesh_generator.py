@@ -8,6 +8,20 @@ from scipy.spatial import Delaunay
 from .shape_clipper import CircleClipper, SquareClipper, RectangleClipper, HexagonClipper
 from .building_shapes import BuildingShapeGenerator
 
+_ELEVATION_PREP_CACHE = {}
+_ELEVATION_SAMPLE_CACHE_LIMIT = 50000
+
+
+def _enforce_min_footprint(x1, x2, z1, z2, min_dim_mm):
+    """Expand a rectangular footprint to at least `min_dim_mm` in X and Z."""
+    cx = (x1 + x2) / 2.0
+    cz = (z1 + z2) / 2.0
+    width = abs(x2 - x1)
+    depth = abs(z2 - z1)
+    half_w = max(width / 2.0, min_dim_mm / 2.0)
+    half_d = max(depth / 2.0, min_dim_mm / 2.0)
+    return cx - half_w, cx + half_w, cz - half_d, cz + half_d
+
 
 def generate_mesh(elevation_data, features, options):
     """
@@ -725,8 +739,13 @@ def create_address_building(address_location, elevation_data, bounds, scale_fact
     raw_elev = interpolate_elevation(addr_lat, addr_lon, elevation_data)
     base_y = ((raw_elev - min_elev) / elev_range) * 20.0 * size_scale * vertical_scale
 
+    # Ensure address marker remains printable even on tiny (e.g., 50mm) models.
+    min_address_footprint_mm = 2.0
+    min_address_height_mm = 2.0
+    x1, x2, z1, z2 = _enforce_min_footprint(x1, x2, z1, z2, min_address_footprint_mm)
+
     height = 8.0 * height_scale * 0.15 * size_scale
-    height = max(height, 3.0 * size_scale)
+    height = max(height, min_address_height_mm)
 
     building_mesh = create_box(x1, x2, base_y, base_y + height, z1, z2)
 
@@ -875,13 +894,19 @@ def generate_building_meshes(buildings, elevation_data, bounds, scale_factor, ve
         # Make address building taller to stand out more
         height = building.get('height', 8.0) * height_scale * 0.15 * size_scale
         if is_address_building:
-            height = max(height, 3.0 * size_scale)  # Ensure minimum height for visibility
+            height = max(height, 2.0)  # Ensure minimum height for visibility/printability
+        else:
+            height = max(height, 1.2)  # Prevent sub-mm buildings at tiny model widths
 
         # Convert bounding box corners to model space
         x1 = (min_lon - bounds['west']) * scale_factor * np.cos(np.radians(avg_lat))
         x2 = (max_lon - bounds['west']) * scale_factor * np.cos(np.radians(avg_lat))
         z1 = (bounds['north'] - max_lat) * scale_factor
         z2 = (bounds['north'] - min_lat) * scale_factor
+
+        # Enforce minimum printable footprint for very small structures.
+        min_building_footprint_mm = 1.2
+        x1, x2, z1, z2 = _enforce_min_footprint(x1, x2, z1, z2, min_building_footprint_mm)
 
         # Check if building is within shape boundary
         # Check all 4 corners - if any corner is outside, skip the building
@@ -1223,9 +1248,33 @@ def generate_gpx_track_mesh(gpx_tracks, elevation_data, bounds, scale_factor, ve
 
 def interpolate_elevation(lat, lon, elevation_data):
     """Interpolate elevation at a specific lat/lon point using bilinear interpolation."""
-    lats = np.array(elevation_data['lats'])
-    lons = np.array(elevation_data['lons'])
-    grid = np.array(elevation_data['grid'])
+    cache_key = (
+        id(elevation_data.get('lats')),
+        id(elevation_data.get('lons')),
+        id(elevation_data.get('grid'))
+    )
+    prepared = _ELEVATION_PREP_CACHE.get(cache_key)
+    if prepared is None:
+        lats = np.asarray(elevation_data['lats'], dtype=np.float64)
+        lons = np.asarray(elevation_data['lons'], dtype=np.float64)
+        grid = np.asarray(elevation_data['grid'], dtype=np.float64)
+        prepared = {
+            'lats': lats,
+            'lons': lons,
+            'grid': grid,
+            'samples': {}
+        }
+        _ELEVATION_PREP_CACHE[cache_key] = prepared
+
+    lats = prepared['lats']
+    lons = prepared['lons']
+    grid = prepared['grid']
+    sample_cache = prepared['samples']
+
+    sample_key = (round(float(lat), 7), round(float(lon), 7))
+    cached = sample_cache.get(sample_key)
+    if cached is not None:
+        return cached
 
     # Clamp to grid bounds
     lat = max(lats[0], min(lats[-1], lat))
@@ -1256,7 +1305,11 @@ def interpolate_elevation(lat, lon, elevation_data):
     z0 = z00 * (1 - s) + z01 * s
     z1 = z10 * (1 - s) + z11 * s
 
-    return z0 * (1 - t) + z1 * t
+    interpolated = z0 * (1 - t) + z1 * t
+    if len(sample_cache) >= _ELEVATION_SAMPLE_CACHE_LIMIT:
+        sample_cache.clear()
+    sample_cache[sample_key] = interpolated
+    return interpolated
 
 
 def extrude_polygon(base_points, height):

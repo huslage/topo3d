@@ -63,6 +63,16 @@ Create stunning 3D printable topographical models from GPX files and open data s
    http://localhost:5001
    ```
 
+## Configuration
+
+Optional environment variables:
+
+- `TOPO3D_DEBUG`: Enable Flask debug mode. Accepts `true|false|1|0` (case-insensitive). Default: `false`.
+- `TOPO3D_CORS_ORIGINS`: Comma-separated list of allowed CORS origins. Default: `http://localhost:*` and `http://127.0.0.1:*`.
+- `TOPO3D_ELEVATION_CACHE_TTL_SECONDS`: Elevation cache TTL in seconds. Default: `86400`.
+- `TOPO3D_OSM_CACHE_TTL_SECONDS`: OSM feature cache TTL in seconds. Default: `86400`.
+- `TOPO3D_FILE_TTL_SECONDS`: Cleanup TTL for old files in uploads/exports. Default: `86400`.
+
 ## How to Use
 
 ### 1. Upload a GPX File
@@ -91,7 +101,7 @@ Fine-tune your model:
 
 ### 4. Generate the Model
 
-Click **"Generate 3D Model"** and watch your terrain come to life in the 3D viewer!
+Use **"Generate Preview"** for fast iteration, then **"Generate Final Quality"** before export.
 
 ### 5. Interact with the Model
 

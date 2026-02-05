@@ -1,6 +1,7 @@
 """Elevation data fetching utilities using Terrain RGB tiles."""
 
 import math
+import os
 import numpy as np
 import requests
 from PIL import Image
@@ -8,9 +9,11 @@ from scipy import interpolate
 from scipy.ndimage import gaussian_filter
 from io import BytesIO
 import srtm
+from .disk_cache import load_json_cache, save_json_cache
 
 # AWS Terrain Tiles (Mapzen/Tilezen format) - free and globally available
 AWS_TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+ELEVATION_CACHE_MAX_AGE_SECONDS = int(os.getenv("TOPO3D_ELEVATION_CACHE_TTL_SECONDS", str(24 * 3600)))
 
 
 def fetch_elevation_data(north, south, east, west, resolution=200):
@@ -30,13 +33,26 @@ def fetch_elevation_data(north, south, east, west, resolution=200):
     Returns:
         dict: Elevation grid data with coordinates
     """
+    cache_key = {
+        'north': round(float(north), 7),
+        'south': round(float(south), 7),
+        'east': round(float(east), 7),
+        'west': round(float(west), 7),
+        'resolution': int(resolution),
+        'version': 1
+    }
+    cached = load_json_cache('elevation', cache_key, max_age_seconds=ELEVATION_CACHE_MAX_AGE_SECONDS)
+    if cached is not None:
+        print("[CACHE] Using cached elevation payload")
+        return cached
+
     # Try terrain RGB tiles first (best quality)
     try:
         elevations, lats, lons = fetch_terrain_rgb_tiles(north, south, east, west, resolution)
         if elevations is not None:
             # Apply light smoothing to blend tile boundaries
             elevations = gaussian_filter(elevations, sigma=0.5)
-            return {
+            payload = {
                 'grid': elevations.tolist(),
                 'lats': lats.tolist(),
                 'lons': lons.tolist(),
@@ -50,11 +66,15 @@ def fetch_elevation_data(north, south, east, west, resolution=200):
                 'min_elevation': float(np.min(elevations)),
                 'max_elevation': float(np.max(elevations))
             }
+            save_json_cache('elevation', cache_key, payload)
+            return payload
     except Exception as e:
         print(f"Terrain RGB tiles failed, falling back to SRTM: {e}")
 
     # Fall back to SRTM
-    return fetch_srtm_elevation(north, south, east, west, resolution)
+    payload = fetch_srtm_elevation(north, south, east, west, resolution)
+    save_json_cache('elevation', cache_key, payload)
+    return payload
 
 
 def lat_lon_to_tile(lat, lon, zoom):

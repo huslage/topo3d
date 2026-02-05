@@ -10,7 +10,7 @@ services:
       - ./exports:/app/exports
     environment:
       - FLASK_ENV=development
-      - FLASK_DEBUG=1
+      - TOPO3D_DEBUG=1
       - FLASK_APP=main.py
     restart: unless-stopped
     healthcheck:

@@ -24,7 +24,7 @@ class MeshValidator:
         self.fixes_applied = []
         self.is_printable = True
 
-    def validate_and_fix(self, mesh_data, validate_features=False, min_feature_size=100):
+    def validate_and_fix(self, mesh_data, validate_features=False, min_feature_size=100, check_manifold_edges=True):
         """
         Validate mesh data and auto-fix common issues.
 
@@ -32,6 +32,7 @@ class MeshValidator:
             mesh_data: Dict with 'terrain', 'features', and 'gpx_track' mesh data
             validate_features: If True, validate all features. If False, only validate large features (default: False for speed)
             min_feature_size: Minimum number of vertices to validate a feature (default: 100)
+            check_manifold_edges: If False, skip expensive manifold edge checks for speed
 
         Returns:
             dict: {
@@ -48,7 +49,7 @@ class MeshValidator:
         # Always validate terrain (most important for 3D printing)
         if mesh_data.get('terrain'):
             t_start = time.time()
-            self._validate_mesh('terrain', mesh_data['terrain'])
+            self._validate_mesh('terrain', mesh_data['terrain'], check_manifold_edges=check_manifold_edges)
             print(f"[PERF] Validated terrain in {time.time() - t_start:.3f}s")
 
         # Selectively validate features based on size
@@ -64,7 +65,7 @@ class MeshValidator:
 
                 # Only validate if explicitly requested OR if feature is large enough
                 if validate_features or vertex_count >= min_feature_size:
-                    self._validate_mesh(feature_name, feature)
+                    self._validate_mesh(feature_name, feature, check_manifold_edges=check_manifold_edges)
                     validated_count += 1
                 else:
                     skipped_count += 1
@@ -76,7 +77,7 @@ class MeshValidator:
         # Always validate GPX track if present
         if mesh_data.get('gpx_track'):
             t_start = time.time()
-            self._validate_mesh('gpx_track', mesh_data['gpx_track'])
+            self._validate_mesh('gpx_track', mesh_data['gpx_track'], check_manifold_edges=check_manifold_edges)
             print(f"[PERF] Validated GPX track in {time.time() - t_start:.3f}s")
 
         return {
@@ -85,7 +86,7 @@ class MeshValidator:
             'fixes_applied': self.fixes_applied
         }
 
-    def _validate_mesh(self, name, mesh):
+    def _validate_mesh(self, name, mesh, check_manifold_edges=True):
         """
         Validate a single mesh component.
 
@@ -117,7 +118,7 @@ class MeshValidator:
             self.fixes_applied.append(f"Merged {merged_count} duplicate vertices in {name}")
 
         # Check for non-manifold edges (only for medium+ meshes to save time)
-        if len(faces) < 1000:  # Skip expensive check for huge meshes
+        if check_manifold_edges and len(faces) < 1000:  # Skip expensive check for huge meshes
             non_manifold_count = self._check_manifold_edges(faces)
             if non_manifold_count > 0:
                 self.warnings.append(f"{name}: {non_manifold_count} non-manifold edge(s) detected (may cause print issues)")

@@ -221,9 +221,8 @@ class CircleClipper(ShapeClipper):
         """
         Clip polygon to circle boundary using Sutherland-Hodgman-style algorithm.
 
-        For simplicity, this returns the polygon if any vertex is inside,
-        None if all vertices are outside. More sophisticated polygon clipping
-        would require a full implementation of circle-polygon intersection.
+        For simplicity and safety, only return the polygon if all vertices are
+        inside. Partial clipping is not implemented.
         """
         if len(points) == 0:
             return None
@@ -234,12 +233,9 @@ class CircleClipper(ShapeClipper):
 
         inside_mask = self.is_inside(x_coords, z_coords)
 
-        if np.any(inside_mask):
-            # At least one vertex inside - keep the polygon
-            # (simplified approach; full clipping would intersect edges)
+        if np.all(inside_mask):
             return points
-        else:
-            return None
+        return None
 
     def generate_wall_vertices(self, terrain_elevation_func, base_height, num_segments=360):
         """
@@ -430,7 +426,7 @@ class SquareClipper(ShapeClipper):
         return segments
 
     def clip_polygon(self, points):
-        """Clip polygon to square boundary (simplified)."""
+        """Clip polygon to square boundary (simplified, all-or-nothing)."""
         if len(points) == 0:
             return None
 
@@ -440,10 +436,9 @@ class SquareClipper(ShapeClipper):
 
         inside_mask = self.is_inside(x_coords, z_coords)
 
-        if np.any(inside_mask):
+        if np.all(inside_mask):
             return points
-        else:
-            return None
+        return None
 
     def generate_wall_vertices(self, terrain_elevation_func, base_height, num_segments=None):
         """Generate square wall following terrain contour."""
@@ -643,7 +638,7 @@ class RectangleClipper(ShapeClipper):
         return segments
 
     def clip_polygon(self, points):
-        """Clip polygon to rectangle boundary (simplified)."""
+        """Clip polygon to rectangle boundary (simplified, all-or-nothing)."""
         if len(points) == 0:
             return None
 
@@ -653,10 +648,9 @@ class RectangleClipper(ShapeClipper):
 
         inside_mask = self.is_inside(x_coords, z_coords)
 
-        if np.any(inside_mask):
+        if np.all(inside_mask):
             return points
-        else:
-            return None
+        return None
 
     def generate_wall_vertices(self, terrain_elevation_func, base_height, num_segments=None):
         """Generate rectangular wall following terrain contour."""
@@ -819,7 +813,7 @@ class HexagonClipper(ShapeClipper):
         return segments
 
     def clip_polygon(self, points):
-        """Clip polygon to hexagon boundary (simplified)."""
+        """Clip polygon to hexagon boundary (simplified, all-or-nothing)."""
         if len(points) == 0:
             return None
 
@@ -829,10 +823,9 @@ class HexagonClipper(ShapeClipper):
 
         inside_mask = self.is_inside(x_coords, z_coords)
 
-        if np.any(inside_mask):
+        if np.all(inside_mask):
             return points
-        else:
-            return None
+        return None
 
     def generate_wall_vertices(self, terrain_elevation_func, base_height, num_segments=None):
         """Generate hexagonal wall following terrain contour."""

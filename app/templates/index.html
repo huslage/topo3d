@@ -513,7 +513,12 @@
                 <!-- Generate -->
                 <div class="section">
                     <h3>🚀 Generate Model</h3>
-                    <button onclick="generateModel()" class="success">Generate 3D Model</button>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="fast-preview-mode" checked>
+                        <label for="fast-preview-mode">Fast preview mode (omit buildings/railways)</label>
+                    </div>
+                    <button onclick="generateModel('preview')" class="success">Generate 3D Model</button>
+                    <button onclick="generateModel('final')">Generate Final Quality</button>
                     <button onclick="export3MF()" class="secondary">Export to 3MF</button>
                 </div>
 
@@ -1105,15 +1110,16 @@
         }
 
         // Fetch elevation data
-        async function fetchElevationData(bounds) {
+        async function fetchElevationData(bounds, previewMode) {
             try {
                 showStatus('Fetching elevation data...', 'info');
+                const resolution = previewMode ? 120 : 220;
                 const response = await fetch('/api/elevation', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         bounds,
-                        resolution: 200  // High resolution with smooth interpolation
+                        resolution
                     })
                 });
 
@@ -1131,13 +1137,19 @@
         }
 
         // Fetch OSM features
-        async function fetchOSMFeatures(bounds) {
+        async function fetchOSMFeatures(bounds, previewMode) {
             const features = [];
             if (document.getElementById('feature-roads').checked) features.push('roads');
             if (document.getElementById('feature-water').checked) features.push('water');
-            const showOnlyAddress = document.getElementById('show-only-address-building').checked;
-            if (document.getElementById('feature-buildings').checked && !showOnlyAddress) features.push('buildings');
-            if (document.getElementById('feature-railways').checked) features.push('railways');
+            const showOnlyAddress = document.getElementById('show-only-address-building').checked && !!geocodedLocation;
+            const fastPreviewEnabled = document.getElementById('fast-preview-mode').checked;
+            const shouldSkipHeavyFeatures = previewMode && fastPreviewEnabled;
+            if (document.getElementById('feature-buildings').checked && !showOnlyAddress && !shouldSkipHeavyFeatures) {
+                features.push('buildings');
+            }
+            if (document.getElementById('feature-railways').checked && !shouldSkipHeavyFeatures) features.push('railways');
+
+            console.log('[DEBUG] OSM features request', { previewMode, showOnlyAddress, shouldSkipHeavyFeatures, features });
 
             try {
                 showStatus('Fetching map features...', 'info');
@@ -1162,21 +1174,31 @@
 
         // Track whether last fetch was for circular model (to detect changes)
         let lastFetchShape = 'square';
+        let lastFetchMode = 'preview';
 
         // Generate 3D model
-        async function generateModel() {
+        async function generateModel(mode = 'preview') {
             if (!elevationData && !gpxData?.bounds) {
                 showStatus('Please upload a GPX file first', 'error');
                 return;
             }
 
+            let previewMode;
+            if (mode === 'final') {
+                previewMode = false;
+            } else if (mode === 'preview') {
+                previewMode = true;
+            } else {
+                previewMode = document.getElementById('fast-preview-mode').checked;
+            }
             const modelShape = document.getElementById('model-shape').value;
 
             // Need refetch if shape changed since last fetch
             const shapeChanged = modelShape !== lastFetchShape;
+            const modeChanged = (previewMode ? 'preview' : 'final') !== lastFetchMode;
 
             // Fetch data if needed (first time, bounds changed, or shape changed)
-            if (gpxData && (gpxData.needsRefetch || !elevationData || shapeChanged)) {
+            if (gpxData && (gpxData.needsRefetch || !elevationData || shapeChanged || modeChanged)) {
                 showStatus('Fetching elevation and map data...', 'info');
                 showLoading(true);
                 try {
@@ -1188,11 +1210,12 @@
                     }
 
                     await Promise.all([
-                        fetchElevationData(fetchBounds),
-                        fetchOSMFeatures(fetchBounds)
+                        fetchElevationData(fetchBounds, previewMode),
+                        fetchOSMFeatures(fetchBounds, previewMode)
                     ]);
                     gpxData.needsRefetch = false;
                     lastFetchShape = modelShape;
+                    lastFetchMode = previewMode ? 'preview' : 'final';
                 } catch (error) {
                     showStatus('Error fetching data: ' + error.message, 'error');
                     showLoading(false);
@@ -1219,7 +1242,9 @@
                 gpx_tracks: gpxData ? gpxData.tracks : [],  // Include GPX tracks for rendering
                 address_location: geocodedLocation,  // Pass the geocoded address location
                 show_only_address_building: showOnlyAddressBuilding,  // Whether to show only the address building
-                custom_building_colors: customBuildingColors  // Pass custom building colors
+                custom_building_colors: customBuildingColors,  // Pass custom building colors
+                preview_mode: previewMode,
+                generation_mode: previewMode ? 'preview' : 'final'
             };
 
             console.log('[DEBUG] Options object built:', options);
@@ -1263,7 +1288,7 @@
 
                     // Display validation results
                     if (result.validation) {
-                        displayValidationResults(result.validation);
+                        displayValidationResults(result.validation, result.timings, result.mode);
                     } else {
                         showStatus('Model generated successfully!', 'success');
                     }
@@ -1278,9 +1303,12 @@
         }
 
         // Display mesh validation results
-        function displayValidationResults(validation) {
+        function displayValidationResults(validation, timings, mode) {
             let message = 'Model generated successfully!';
             let messageType = 'success';
+            if (mode) {
+                message += `\nMode: ${mode}`;
+            }
 
             // Show fixes that were applied
             if (validation.fixes_applied && validation.fixes_applied.length > 0) {
@@ -1302,6 +1330,10 @@
                     message += '\n\nModel may have printability issues!';
                     messageType = 'error';
                 }
+            }
+
+            if (timings) {
+                message += `\n\nTiming: parse=${timings.parse_seconds}s, mesh=${timings.mesh_seconds}s, validation=${timings.validation_seconds}s, total=${timings.total_seconds}s`;
             }
 
             showStatus(message, messageType);

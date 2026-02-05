@@ -2,6 +2,9 @@
 
 import requests
 import time
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from .disk_cache import load_json_cache, save_json_cache
 
 # Multiple Overpass API servers for fallback
 OVERPASS_SERVERS = [
@@ -9,6 +12,7 @@ OVERPASS_SERVERS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.openstreetmap.ru/api/interpreter",
 ]
+OSM_CACHE_MAX_AGE_SECONDS = int(os.getenv("TOPO3D_OSM_CACHE_TTL_SECONDS", str(24 * 3600)))
 
 
 def fetch_osm_features(north, south, east, west, feature_types):
@@ -33,23 +37,34 @@ def fetch_osm_features(north, south, east, west, feature_types):
         'landuse': []
     }
 
+    cache_key = {
+        'north': round(float(north), 7),
+        'south': round(float(south), 7),
+        'east': round(float(east), 7),
+        'west': round(float(west), 7),
+        'feature_types': sorted(list(feature_types)),
+        'version': 1
+    }
+    cached = load_json_cache('osm_features', cache_key, max_age_seconds=OSM_CACHE_MAX_AGE_SECONDS)
+    if cached is not None:
+        print("[CACHE] Using cached OSM features payload")
+        return cached
+
     bbox = f"{south},{west},{north},{east}"
 
-    try:
-        # Fetch roads
-        if 'roads' in feature_types:
-            query = f"""
+    query_specs = {}
+    if 'roads' in feature_types:
+        query_specs['roads'] = (
+            f"""
             [out:json][timeout:30];
             way["highway"]({bbox});
             out body geom;
-            """
-            roads_data = query_overpass(query)
-            features['roads'] = parse_elements(roads_data, 'road')
-            print(f"Fetched {len(features['roads'])} roads")
-
-        # Fetch water features
-        if 'water' in feature_types:
-            query = f"""
+            """,
+            'road'
+        )
+    if 'water' in feature_types:
+        query_specs['water'] = (
+            f"""
             [out:json][timeout:30];
             (
               way["natural"="water"]({bbox});
@@ -57,33 +72,46 @@ def fetch_osm_features(north, south, east, west, feature_types):
               relation["natural"="water"]({bbox});
             );
             out body geom;
-            """
-            water_data = query_overpass(query)
-            features['water'] = parse_elements(water_data, 'water')
-            print(f"Fetched {len(features['water'])} water features")
-
-        # Fetch buildings
-        if 'buildings' in feature_types:
-            query = f"""
+            """,
+            'water'
+        )
+    if 'buildings' in feature_types:
+        query_specs['buildings'] = (
+            f"""
             [out:json][timeout:30];
             way["building"]({bbox});
             out body geom;
-            """
-            buildings_data = query_overpass(query)
-            features['buildings'] = parse_elements(buildings_data, 'building')
-            print(f"Fetched {len(features['buildings'])} buildings")
-
-        # Fetch railways
-        if 'railways' in feature_types:
-            query = f"""
+            """,
+            'building'
+        )
+    if 'railways' in feature_types:
+        query_specs['railways'] = (
+            f"""
             [out:json][timeout:30];
             way["railway"]({bbox});
             out body geom;
-            """
-            railways_data = query_overpass(query)
-            features['railways'] = parse_elements(railways_data, 'railway')
-            print(f"Fetched {len(features['railways'])} railways")
+            """,
+            'railway'
+        )
 
+    try:
+        # Execute independent feature queries in parallel to reduce total wait time.
+        with ThreadPoolExecutor(max_workers=min(4, max(1, len(query_specs)))) as executor:
+            futures = {
+                executor.submit(query_overpass, query): (feature_name, parse_type)
+                for feature_name, (query, parse_type) in query_specs.items()
+            }
+            for future in as_completed(futures):
+                feature_name, parse_type = futures[future]
+                try:
+                    raw_elements = future.result()
+                    parsed = parse_elements(raw_elements, parse_type)
+                    features[feature_name] = parsed
+                    print(f"Fetched {len(parsed)} {feature_name}")
+                except Exception as e:
+                    print(f"Warning: failed to fetch {feature_name}: {e}")
+
+        save_json_cache('osm_features', cache_key, features)
         return features
 
     except Exception as e:
