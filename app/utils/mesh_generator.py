@@ -7,6 +7,8 @@ from stl import mesh
 from scipy.spatial import Delaunay
 from .shape_clipper import CircleClipper, SquareClipper, RectangleClipper, HexagonClipper
 from .building_shapes import BuildingShapeGenerator
+from .app_config import get_default_building_source_mode
+from .cesium_tiles_provider import fetch_cesium_building_meshes
 
 _ELEVATION_PREP_CACHE = {}
 _ELEVATION_SAMPLE_CACHE_LIMIT = 50000
@@ -118,9 +120,20 @@ def generate_mesh(elevation_data, features, options):
         }
 
         feature_meshes = []
+        fallback_reasons = {
+            'building': options.get('_building_fallback_reason'),
+            'terrain': options.get('_terrain_fallback_reason')
+        }
+        terrain_source_used = elevation_data.get('source', 'default')
+        if terrain_source_used not in {'default', 'cesium'}:
+            terrain_source_used = 'default'
+        building_source_used = 'none'
 
         address_location = options.get('address_location')
         show_only_address_building = options.get('show_only_address_building', False)
+        building_mode = options.get('building_mode', get_default_building_source_mode())
+        if building_mode not in {'osm_extrude', 'tiles', 'hybrid'}:
+            building_mode = get_default_building_source_mode()
 
         if show_only_address_building and address_location:
             # Create a single synthetic building at the address location
@@ -136,11 +149,11 @@ def generate_mesh(elevation_data, features, options):
             )
             if building_mesh:
                 feature_meshes.append(building_mesh)
-        elif features.get('buildings'):
+                building_source_used = 'osm_extrude'
+        elif building_mode == 'osm_extrude':
             custom_building_colors = options.get('custom_building_colors', {})
-
             building_meshes = generate_building_meshes(
-                features['buildings'],
+                features.get('buildings', []),
                 elevation_data,
                 bounds,
                 scale_factor,
@@ -153,6 +166,67 @@ def generate_mesh(elevation_data, features, options):
                 custom_building_colors
             )
             feature_meshes.extend(building_meshes)
+            if building_meshes:
+                building_source_used = 'osm_extrude'
+        elif building_mode == 'tiles':
+            try:
+                tile_meshes = fetch_cesium_building_meshes(
+                    bounds,
+                    scale_factor,
+                    vertical_scale,
+                    elev_params,
+                    options,
+                    shape_clipper
+                )
+                feature_meshes.extend(tile_meshes)
+                building_source_used = 'tiles' if tile_meshes else 'none'
+                if not tile_meshes:
+                    fallback_reasons['building'] = fallback_reasons['building'] or (
+                        'No Cesium building meshes returned'
+                    )
+            except Exception as exc:
+                raise Exception(f"Tiles-only building mode failed: {exc}")
+        else:  # hybrid
+            tile_meshes = []
+            tile_error = None
+            try:
+                tile_meshes = fetch_cesium_building_meshes(
+                    bounds,
+                    scale_factor,
+                    vertical_scale,
+                    elev_params,
+                    options,
+                    shape_clipper
+                )
+            except Exception as exc:
+                tile_error = str(exc)
+
+            if tile_meshes:
+                feature_meshes.extend(tile_meshes)
+                building_source_used = 'tiles'
+            else:
+                if tile_error:
+                    fallback_reasons['building'] = tile_error
+                elif not fallback_reasons['building']:
+                    fallback_reasons['building'] = 'No Cesium building meshes returned'
+
+                custom_building_colors = options.get('custom_building_colors', {})
+                building_meshes = generate_building_meshes(
+                    features.get('buildings', []),
+                    elevation_data,
+                    bounds,
+                    scale_factor,
+                    vertical_scale,
+                    elev_params,
+                    options.get('building_height_scale', 1.0),
+                    address_location,
+                    False,
+                    shape_clipper,
+                    custom_building_colors
+                )
+                feature_meshes.extend(building_meshes)
+                if building_meshes:
+                    building_source_used = 'osm_extrude'
 
         if features.get('roads'):
             road_meshes = generate_road_meshes(
@@ -205,7 +279,10 @@ def generate_mesh(elevation_data, features, options):
             'metadata': {
                 'vertices_count': len(terrain_mesh['vertices']),
                 'faces_count': len(terrain_mesh['faces']),
-                'features_count': len(feature_meshes)
+                'features_count': len(feature_meshes),
+                'building_source_used': building_source_used,
+                'terrain_source_used': terrain_source_used,
+                'fallback_reasons': fallback_reasons
             }
         }
 

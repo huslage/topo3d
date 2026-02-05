@@ -2,6 +2,8 @@ services:
   topo3d:
     build: .
     container_name: topo3d
+    env_file:
+      - .env
     ports:
       - "5001:5001"
     volumes:
