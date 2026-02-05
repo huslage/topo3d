@@ -43,6 +43,7 @@ uploads/*.gpx
 exports/*.stl
 exports/*.3mf
 *.log
+.env
 
 # Docker
 .dockerignore

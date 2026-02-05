@@ -1,118 +1,127 @@
-"""Address geocoding utilities."""
+"""Address geocoding utilities.
 
-from geopy.geocoders import Nominatim
-from geopy.exc import GeopyError
-import requests
+Resolution order:
+1. Extract coordinates from Google Maps URLs.
+2. Query Cesium ion geocoding endpoints.
+"""
+
 import re
+import requests
+
+from .app_config import get_cesium_ion_token, get_cesium_timeout_seconds
+
+_GOOGLE_MAPS_HOST_PATTERNS = ("google.com/maps", "goo.gl/maps")
+
+
+def _extract_coords_from_google_maps_url(url):
+    """Extract lat/lon from common Google Maps URL formats."""
+    data_match = re.search(r"!3d(-?\d+\.?\d*)!4d(-?\d+\.?\d*)", url)
+    if data_match:
+        return float(data_match.group(1)), float(data_match.group(2))
+
+    at_match = re.search(r"@(-?\d+\.?\d*),(-?\d+\.?\d*)", url)
+    if at_match:
+        return float(at_match.group(1)), float(at_match.group(2))
+
+    q_match = re.search(r"[?&]q=(-?\d+\.?\d*),(-?\d+\.?\d*)", url)
+    if q_match:
+        return float(q_match.group(1)), float(q_match.group(2))
+
+    return None
+
+
+def _is_google_maps_url(value):
+    value = (value or "").lower()
+    return any(host in value for host in _GOOGLE_MAPS_HOST_PATTERNS)
+
+
+def _parse_cesium_response(data, original_query):
+    """Parse Cesium geocoder response shapes into a standard dict."""
+    if not isinstance(data, dict):
+        return None
+
+    features = data.get("features")
+    if isinstance(features, list) and features:
+        first = features[0]
+        geometry = first.get("geometry", {}) if isinstance(first, dict) else {}
+        coords = geometry.get("coordinates") if isinstance(geometry, dict) else None
+        if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+            lon, lat = float(coords[0]), float(coords[1])
+            label = first.get("place_name") or first.get("name") or original_query
+            return {
+                "address": label,
+                "lat": lat,
+                "lon": lon,
+                "raw": data,
+            }
+
+    results = data.get("results")
+    if isinstance(results, list) and results:
+        first = results[0]
+        destination = first.get("destination") if isinstance(first, dict) else None
+        if isinstance(destination, (list, tuple)) and len(destination) >= 2:
+            lon, lat = float(destination[0]), float(destination[1])
+            label = first.get("displayName") or first.get("name") or original_query
+            return {
+                "address": label,
+                "lat": lat,
+                "lon": lon,
+                "raw": data,
+            }
+
+    return None
+
+
+def _geocode_with_cesium(address, timeout):
+    token = get_cesium_ion_token()
+    if not token:
+        raise Exception("CESIUM_ION_TOKEN is not configured")
+
+    if timeout is None:
+        timeout = get_cesium_timeout_seconds()
+
+    endpoint_candidates = [
+        ("https://api.cesium.com/v1/geocode", {"text": address, "access_token": token}),
+        ("https://api.cesium.com/v1/geocode", {"q": address, "access_token": token}),
+        ("https://api.cesium.com/v1/geocode/search", {"text": address, "access_token": token}),
+        ("https://api.cesium.com/v1/geocode/search", {"q": address, "access_token": token}),
+    ]
+
+    last_error = None
+    for url, params in endpoint_candidates:
+        try:
+            response = requests.get(url, params=params, timeout=timeout)
+            if response.status_code == 404:
+                last_error = "Endpoint not found"
+                continue
+            response.raise_for_status()
+            data = response.json()
+            parsed = _parse_cesium_response(data, address)
+            if parsed:
+                return parsed
+            last_error = "No geocoding results"
+        except Exception as exc:
+            last_error = str(exc)
+
+    raise Exception(f"Cesium geocoding failed: {last_error}")
 
 
 def geocode_address(address, timeout=10):
-    """
-    Geocode an address to coordinates using OpenStreetMap Nominatim.
-    Tries structured search first for better accuracy, then falls back to free-form.
+    """Geocode an address to coordinates using Google URL parsing and Cesium ion."""
+    value = (address or "").strip()
+    if not value:
+        raise Exception("No address provided")
 
-    Args:
-        address: Address string to geocode
-        timeout: Request timeout in seconds
+    if _is_google_maps_url(value):
+        coords = _extract_coords_from_google_maps_url(value)
+        if coords:
+            lat, lon = coords
+            return {
+                "address": f"Coordinates from Google Maps URL ({lat:.6f}, {lon:.6f})",
+                "lat": lat,
+                "lon": lon,
+                "raw": {"source": "google_maps_url"},
+            }
+        raise Exception("Could not extract coordinates from Google Maps URL")
 
-    Returns:
-        dict: Location data with coordinates and display name
-    """
-    # Try to parse the address into structured components for better accuracy
-    structured_result = try_structured_geocode(address, timeout)
-    if structured_result:
-        print(f"Structured geocode result: {structured_result['lat']}, {structured_result['lon']}")
-        return structured_result
-
-    # Fall back to free-form geocoding
-    try:
-        geolocator = Nominatim(user_agent="topo3d")
-        location = geolocator.geocode(address, timeout=timeout, addressdetails=True)
-
-        if not location:
-            raise ValueError(f"Address not found: {address}")
-
-        print(f"Free-form geocode result: {location.latitude}, {location.longitude}")
-
-        return {
-            'address': location.address,
-            'lat': location.latitude,
-            'lon': location.longitude,
-            'raw': location.raw
-        }
-
-    except GeopyError as e:
-        raise Exception(f"Geocoding error: {str(e)}")
-    except Exception as e:
-        raise Exception(f"Error geocoding address: {str(e)}")
-
-
-def try_structured_geocode(address, timeout=10):
-    """
-    Try to geocode using structured query for better accuracy.
-    Parses common address formats and uses Nominatim's structured search.
-    """
-    try:
-        # Try to extract house number and street from the address
-        # Common patterns: "38 Brolga St", "38 Brolga Street, Mount Gambier"
-        match = re.match(r'^(\d+)\s+(.+?)(?:,\s*(.+))?$', address.strip())
-        if not match:
-            return None
-
-        housenumber = match.group(1)
-        rest = match.group(2)
-
-        # Split the rest into street and city/state
-        parts = rest.split(',')
-        street = parts[0].strip()
-
-        # Build structured query
-        params = {
-            'street': f"{housenumber} {street}",
-            'format': 'json',
-            'addressdetails': '1',
-            'limit': '1'
-        }
-
-        # Add city/state if available
-        if len(parts) > 1:
-            # Try to identify city and state
-            remaining = ', '.join(parts[1:]).strip()
-            if remaining:
-                params['city'] = remaining.split(',')[0].strip()
-                if len(remaining.split(',')) > 1:
-                    state_country = remaining.split(',')[1:]
-                    for part in state_country:
-                        part = part.strip()
-                        if part.lower() in ['australia', 'au', 'usa', 'uk', 'canada']:
-                            params['country'] = part
-                        elif len(part) <= 3:
-                            params['state'] = part
-        elif match.group(3):
-            city_state = match.group(3)
-            parts = city_state.split(',')
-            params['city'] = parts[0].strip()
-
-        # Make the request
-        response = requests.get(
-            'https://nominatim.openstreetmap.org/search',
-            params=params,
-            headers={'User-Agent': 'topo3d'},
-            timeout=timeout
-        )
-
-        if response.status_code == 200:
-            results = response.json()
-            if results:
-                result = results[0]
-                return {
-                    'address': result.get('display_name', address),
-                    'lat': float(result['lat']),
-                    'lon': float(result['lon']),
-                    'raw': result
-                }
-
-    except Exception as e:
-        print(f"Structured geocode failed: {e}")
-
-    return None
+    return _geocode_with_cesium(value, timeout)

@@ -7,6 +7,7 @@ Web application for creating 3D printable topographical models from GPX files an
 import os
 import json
 import tempfile
+import time
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file
 from flask_cors import CORS
@@ -18,6 +19,11 @@ from utils.osm_fetcher import fetch_osm_features
 from utils.mesh_generator import generate_mesh, export_to_stl, export_to_3mf
 from utils.mesh_validator import MeshValidator
 from utils.geocoder import geocode_address
+from utils.app_config import (
+    get_default_building_source_mode,
+    get_default_terrain_source_mode,
+    parse_env_bool,
+)
 
 app = Flask(__name__)
 CORS(app)
@@ -105,21 +111,43 @@ def get_elevation():
         data = request.get_json()
         bounds = data.get('bounds', {})
         resolution = data.get('resolution', 100)
+        source_mode = data.get('source_mode', get_default_terrain_source_mode())
+        preview_mode = parse_env_bool(data.get('preview_mode'), default=False)
 
         if not all(k in bounds for k in ['north', 'south', 'east', 'west']):
             return jsonify({'error': 'Invalid bounds provided'}), 400
 
-        elevation_data = fetch_elevation_data(
-            bounds['north'],
-            bounds['south'],
-            bounds['east'],
-            bounds['west'],
-            resolution
-        )
+        terrain_fallback_reason = None
+        try:
+            elevation_data = fetch_elevation_data(
+                bounds['north'],
+                bounds['south'],
+                bounds['east'],
+                bounds['west'],
+                resolution,
+                source_mode=source_mode,
+                preview_mode=preview_mode
+            )
+        except Exception as exc:
+            if source_mode == 'hybrid':
+                terrain_fallback_reason = str(exc)
+                elevation_data = fetch_elevation_data(
+                    bounds['north'],
+                    bounds['south'],
+                    bounds['east'],
+                    bounds['west'],
+                    resolution,
+                    source_mode='default',
+                    preview_mode=preview_mode
+                )
+            else:
+                raise
 
         return jsonify({
             'success': True,
-            'elevation': elevation_data
+            'elevation': elevation_data,
+            'source': elevation_data.get('source', 'default'),
+            'fallback_reason': terrain_fallback_reason or elevation_data.get('fallback_reason')
         })
 
     except Exception as e:
@@ -157,7 +185,6 @@ def get_osm_features():
 @app.route('/api/generate', methods=['POST'])
 def generate_model():
     """Generate 3D model from provided data."""
-    import time
     try:
         t_start = time.time()
         data = request.get_json()
@@ -166,6 +193,12 @@ def generate_model():
         elevation = data.get('elevation', {})
         features = data.get('features', {})
         options = data.get('options', {})
+        options.setdefault('building_mode', get_default_building_source_mode())
+        options.setdefault('terrain_source_mode', get_default_terrain_source_mode())
+        options.setdefault('building_mesh_simplify', True)
+        options.setdefault('building_mesh_target_ratio_preview', 0.2)
+        options.setdefault('building_mesh_target_ratio_final', 0.4)
+        options.setdefault('preview_mode', parse_env_bool(options.get('preview_mode'), default=False))
 
         if not elevation:
             return jsonify({'error': 'No elevation data provided'}), 400
@@ -204,7 +237,11 @@ def generate_model():
         return jsonify({
             'success': True,
             'mesh': mesh_data,
-            'validation': validation_result
+            'validation': validation_result,
+            'metadata': mesh_data.get('metadata', {}),
+            'timings': {
+                'total_seconds': round(time.time() - t_start, 4)
+            }
         })
 
     except Exception as e:

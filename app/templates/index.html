@@ -508,6 +508,22 @@
                             <option value="hexagon">Hexagon</option>
                         </select>
                     </div>
+                    <div style="margin: 10px 0;">
+                        <label for="building-source-mode" style="display: block; margin-bottom: 5px; font-weight: 500;">Building Source</label>
+                        <select id="building-source-mode" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                            <option value="hybrid">Hybrid (Tiles + OSM Fallback)</option>
+                            <option value="tiles">Tiles Only</option>
+                            <option value="osm_extrude">OSM Extrude Only</option>
+                        </select>
+                    </div>
+                    <div style="margin: 10px 0;">
+                        <label for="terrain-source-mode" style="display: block; margin-bottom: 5px; font-weight: 500;">Terrain Source</label>
+                        <select id="terrain-source-mode" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                            <option value="hybrid">Hybrid (Cesium + Default Fallback)</option>
+                            <option value="cesium">Cesium Only</option>
+                            <option value="default">Default Only</option>
+                        </select>
+                    </div>
                 </div>
 
                 <!-- Generate -->
@@ -593,6 +609,7 @@
         let elevationData = null;
         let osmFeatures = null;
         let currentMesh = null;
+        let elevationFallbackReason = null;
         let selectedObjects = new Set();  // Multiple selection support
         let objectsList = [];
         let customBuildingColors = {};  // Store custom colors: { buildingId: hexColor }
@@ -1108,12 +1125,15 @@
         async function fetchElevationData(bounds) {
             try {
                 showStatus('Fetching elevation data...', 'info');
+                const terrainSourceMode = document.getElementById('terrain-source-mode').value;
                 const response = await fetch('/api/elevation', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         bounds,
-                        resolution: 200  // High resolution with smooth interpolation
+                        resolution: 200,  // High resolution with smooth interpolation
+                        source_mode: terrainSourceMode,
+                        preview_mode: false
                     })
                 });
 
@@ -1121,6 +1141,7 @@
 
                 if (result.success) {
                     elevationData = result.elevation;
+                    elevationFallbackReason = result.fallback_reason || null;
                     showStatus('Elevation data loaded!', 'success');
                 } else {
                     showStatus('Error: ' + result.error, 'error');
@@ -1216,10 +1237,17 @@
                 base_height: parseFloat(document.getElementById('base-height').value),
                 include_base: document.getElementById('include-base').checked,
                 model_shape: document.getElementById('model-shape').value,
+                building_mode: document.getElementById('building-source-mode').value,
+                terrain_source_mode: document.getElementById('terrain-source-mode').value,
+                building_mesh_simplify: true,
+                building_mesh_target_ratio_preview: 0.2,
+                building_mesh_target_ratio_final: 0.4,
+                preview_mode: false,
                 gpx_tracks: gpxData ? gpxData.tracks : [],  // Include GPX tracks for rendering
                 address_location: geocodedLocation,  // Pass the geocoded address location
                 show_only_address_building: showOnlyAddressBuilding,  // Whether to show only the address building
-                custom_building_colors: customBuildingColors  // Pass custom building colors
+                custom_building_colors: customBuildingColors,  // Pass custom building colors
+                _terrain_fallback_reason: elevationFallbackReason
             };
 
             console.log('[DEBUG] Options object built:', options);
@@ -1263,7 +1291,7 @@
 
                     // Display validation results
                     if (result.validation) {
-                        displayValidationResults(result.validation);
+                        displayValidationResults(result.validation, result.metadata || result.mesh?.metadata || {});
                     } else {
                         showStatus('Model generated successfully!', 'success');
                     }
@@ -1278,9 +1306,20 @@
         }
 
         // Display mesh validation results
-        function displayValidationResults(validation) {
+        function displayValidationResults(validation, metadata = {}) {
             let message = 'Model generated successfully!';
             let messageType = 'success';
+            if (metadata.terrain_source_used || metadata.building_source_used) {
+                message += `\n\nSources: terrain=${metadata.terrain_source_used || 'default'}, buildings=${metadata.building_source_used || 'none'}`;
+            }
+            if (metadata.fallback_reasons) {
+                if (metadata.fallback_reasons.terrain) {
+                    message += `\nTerrain fallback: ${metadata.fallback_reasons.terrain}`;
+                }
+                if (metadata.fallback_reasons.building) {
+                    message += `\nBuilding fallback: ${metadata.fallback_reasons.building}`;
+                }
+            }
 
             // Show fixes that were applied
             if (validation.fixes_applied && validation.fixes_applied.length > 0) {
