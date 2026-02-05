@@ -1135,7 +1135,8 @@
             const features = [];
             if (document.getElementById('feature-roads').checked) features.push('roads');
             if (document.getElementById('feature-water').checked) features.push('water');
-            if (document.getElementById('feature-buildings').checked) features.push('buildings');
+            const showOnlyAddress = document.getElementById('show-only-address-building').checked;
+            if (document.getElementById('feature-buildings').checked && !showOnlyAddress) features.push('buildings');
             if (document.getElementById('feature-railways').checked) features.push('railways');
 
             try {
@@ -1179,9 +1180,9 @@
                 showStatus('Fetching elevation and map data...', 'info');
                 showLoading(true);
                 try {
-                    // Use square bounds for circle/hexagon, regular bounds otherwise
+                    // Use square bounds for square/circle/hexagon, regular bounds for rectangle
                     let fetchBounds = gpxData.bounds;
-                    if (modelShape === 'circle' || modelShape === 'hexagon') {
+                    if (modelShape === 'square' || modelShape === 'circle' || modelShape === 'hexagon') {
                         fetchBounds = getSquareBoundsForCircle(gpxData.bounds);
                         console.log(`${modelShape} shape: expanding to square bounds`, fetchBounds);
                     }
@@ -1205,7 +1206,9 @@
                 return;
             }
 
+            console.log('[DEBUG] Elevation data check passed');
             const showOnlyAddressBuilding = document.getElementById('show-only-address-building').checked;
+            console.log('[DEBUG] Got showOnlyAddressBuilding:', showOnlyAddressBuilding);
 
             const options = {
                 vertical_scale: parseFloat(document.getElementById('vertical-scale').value),
@@ -1219,21 +1222,39 @@
                 custom_building_colors: customBuildingColors  // Pass custom building colors
             };
 
+            console.log('[DEBUG] Options object built:', options);
+
             try {
                 showLoading(true);
                 showStatus('Generating 3D model...', 'info');
 
-                const response = await fetch('/api/generate', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        elevation: elevationData,
-                        features: osmFeatures || {},
-                        options
-                    })
-                });
+                console.log('[DEBUG] About to stringify payload...');
+                const payload = {
+                    elevation: elevationData,
+                    features: osmFeatures || {},
+                    options
+                };
+                console.log('[DEBUG] Payload object created, stringifying...');
+                const payloadStr = JSON.stringify(payload);
+                console.log('[DEBUG] Stringify complete, payload size:', payloadStr.length, 'characters');
 
+                console.log('[DEBUG] Making fetch call to /api/generate');
+                let response;
+                try {
+                    response = await fetch('/api/generate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: payloadStr
+                    });
+                    console.log('[DEBUG] Fetch returned, status:', response.status);
+                } catch (fetchError) {
+                    console.error('[DEBUG] Fetch failed with error:', fetchError);
+                    throw fetchError;
+                }
+
+                console.log('[DEBUG] About to parse JSON response');
                 const result = await response.json();
+                console.log('[DEBUG] JSON parsed successfully');
 
                 if (result.success) {
                     currentMesh = result.mesh;

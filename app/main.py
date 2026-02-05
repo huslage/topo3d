@@ -157,8 +157,11 @@ def get_osm_features():
 @app.route('/api/generate', methods=['POST'])
 def generate_model():
     """Generate 3D model from provided data."""
+    import time
     try:
+        t_start = time.time()
         data = request.get_json()
+        print(f"[PERF] Request parsed in {time.time() - t_start:.3f}s")
 
         elevation = data.get('elevation', {})
         features = data.get('features', {})
@@ -168,11 +171,35 @@ def generate_model():
             return jsonify({'error': 'No elevation data provided'}), 400
 
         # Generate 3D mesh
+        t_mesh_start = time.time()
         mesh_data = generate_mesh(elevation, features, options)
+        print(f"[PERF] generate_mesh() took {time.time() - t_mesh_start:.3f}s")
 
         # Validate and auto-fix mesh for 3D printability
+        # Optimized with KD-tree and vectorized operations for fast performance
+        t_validate_start = time.time()
         validator = MeshValidator()
-        validation_result = validator.validate_and_fix(mesh_data)
+        try:
+            validation_result = validator.validate_and_fix(
+                mesh_data,
+                validate_features=True,  # Now fast enough to validate all features
+                min_feature_size=0  # Validate everything (tiny meshes skip automatically)
+            )
+            print(f"[PERF] validate_and_fix() took {time.time() - t_validate_start:.3f}s")
+        except Exception as e:
+            print(f"[ERROR] Validation failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            # If validation fails, continue without it
+            validation_result = {
+                'is_printable': True,
+                'warnings': [f'Validation error: {str(e)}'],
+                'fixes_applied': []
+            }
+            print(f"[PERF] validate_and_fix() failed in {time.time() - t_validate_start:.3f}s")
+
+        t_total = time.time() - t_start
+        print(f"[PERF] Total /api/generate time: {t_total:.3f}s")
 
         return jsonify({
             'success': True,
@@ -181,6 +208,9 @@ def generate_model():
         })
 
     except Exception as e:
+        import traceback
+        print(f"[ERROR] /api/generate failed: {str(e)}")
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 

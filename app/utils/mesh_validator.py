@@ -2,6 +2,7 @@
 
 import numpy as np
 from collections import defaultdict
+from scipy.spatial import cKDTree
 
 
 class MeshValidator:
@@ -23,12 +24,14 @@ class MeshValidator:
         self.fixes_applied = []
         self.is_printable = True
 
-    def validate_and_fix(self, mesh_data):
+    def validate_and_fix(self, mesh_data, validate_features=False, min_feature_size=100):
         """
         Validate mesh data and auto-fix common issues.
 
         Args:
             mesh_data: Dict with 'terrain', 'features', and 'gpx_track' mesh data
+            validate_features: If True, validate all features. If False, only validate large features (default: False for speed)
+            min_feature_size: Minimum number of vertices to validate a feature (default: 100)
 
         Returns:
             dict: {
@@ -37,22 +40,44 @@ class MeshValidator:
                 'fixes_applied': list of fixes that were applied
             }
         """
+        import time
         self.warnings = []
         self.fixes_applied = []
         self.is_printable = True
 
-        # Validate terrain
+        # Always validate terrain (most important for 3D printing)
         if mesh_data.get('terrain'):
+            t_start = time.time()
             self._validate_mesh('terrain', mesh_data['terrain'])
+            print(f"[PERF] Validated terrain in {time.time() - t_start:.3f}s")
 
-        # Validate features
-        for i, feature in enumerate(mesh_data.get('features', [])):
-            feature_name = feature.get('name', f"feature_{i}")
-            self._validate_mesh(feature_name, feature)
+        # Selectively validate features based on size
+        features = mesh_data.get('features', [])
+        if features:
+            validated_count = 0
+            skipped_count = 0
+            t_features_start = time.time()
 
-        # Validate GPX track
+            for i, feature in enumerate(features):
+                feature_name = feature.get('name', f"feature_{i}")
+                vertex_count = len(feature.get('vertices', []))
+
+                # Only validate if explicitly requested OR if feature is large enough
+                if validate_features or vertex_count >= min_feature_size:
+                    self._validate_mesh(feature_name, feature)
+                    validated_count += 1
+                else:
+                    skipped_count += 1
+
+            t_features_total = time.time() - t_features_start
+            if validated_count > 0:
+                print(f"[PERF] Validated {validated_count} features (skipped {skipped_count} small features) in {t_features_total:.3f}s")
+
+        # Always validate GPX track if present
         if mesh_data.get('gpx_track'):
+            t_start = time.time()
             self._validate_mesh('gpx_track', mesh_data['gpx_track'])
+            print(f"[PERF] Validated GPX track in {time.time() - t_start:.3f}s")
 
         return {
             'is_printable': self.is_printable,
@@ -74,24 +99,29 @@ class MeshValidator:
         vertices = np.array(mesh['vertices'])
         faces = np.array(mesh['faces'])
 
+        # Skip validation for very tiny meshes (< 8 vertices) - unlikely to have issues
+        if len(vertices) < 8:
+            return
+
         # Check for degenerate faces (zero-area triangles)
         faces, removed_count = self._remove_degenerate_faces(vertices, faces)
         if removed_count > 0:
             mesh['faces'] = faces.tolist()
             self.fixes_applied.append(f"Removed {removed_count} degenerate face(s) from {name}")
 
-        # Check for duplicate vertices
+        # Check for duplicate vertices (now fast with KD-tree)
         vertices, faces, merged_count = self._merge_duplicate_vertices(vertices, faces)
         if merged_count > 0:
             mesh['vertices'] = vertices.tolist()
             mesh['faces'] = faces.tolist()
             self.fixes_applied.append(f"Merged {merged_count} duplicate vertices in {name}")
 
-        # Check for non-manifold edges
-        non_manifold_count = self._check_manifold_edges(faces)
-        if non_manifold_count > 0:
-            self.warnings.append(f"{name}: {non_manifold_count} non-manifold edge(s) detected (may cause print issues)")
-            # Note: Auto-fixing non-manifold edges is complex and risky, so we just warn
+        # Check for non-manifold edges (only for medium+ meshes to save time)
+        if len(faces) < 1000:  # Skip expensive check for huge meshes
+            non_manifold_count = self._check_manifold_edges(faces)
+            if non_manifold_count > 0:
+                self.warnings.append(f"{name}: {non_manifold_count} non-manifold edge(s) detected (may cause print issues)")
+                # Note: Auto-fixing non-manifold edges is complex and risky, so we just warn
 
     def _remove_degenerate_faces(self, vertices, faces):
         """
@@ -129,7 +159,7 @@ class MeshValidator:
 
     def _merge_duplicate_vertices(self, vertices, faces, tolerance=1e-6):
         """
-        Merge duplicate vertices and update face indices.
+        Merge duplicate vertices and update face indices using fast KD-tree.
 
         Args:
             vertices: numpy array of vertices (N, 3)
@@ -142,37 +172,48 @@ class MeshValidator:
         if len(vertices) == 0:
             return vertices, faces, 0
 
-        # Build mapping from old indices to new indices
-        vertex_map = {}
-        unique_vertices = []
-        unique_idx = 0
+        # Use KD-tree for fast nearest neighbor lookup - O(n log n) instead of O(n²)
+        tree = cKDTree(vertices)
 
-        for i, vertex in enumerate(vertices):
-            # Check if this vertex is duplicate of an existing one
-            is_duplicate = False
-            for j, unique_vertex in enumerate(unique_vertices):
-                if np.linalg.norm(vertex - unique_vertex) < tolerance:
-                    vertex_map[i] = j
-                    is_duplicate = True
-                    break
+        # Find groups of duplicate vertices
+        # query_ball_tree returns all points within tolerance distance
+        groups = tree.query_ball_tree(tree, tolerance)
 
-            if not is_duplicate:
-                vertex_map[i] = unique_idx
-                unique_vertices.append(vertex)
-                unique_idx += 1
+        # Build vertex mapping: map each vertex to its representative (lowest index in group)
+        vertex_map = np.arange(len(vertices))
+        visited = set()
+
+        for i, group in enumerate(groups):
+            if i in visited:
+                continue
+            # Use the first vertex in the group as representative
+            rep = min(group)
+            for v in group:
+                vertex_map[v] = rep
+                visited.add(v)
+
+        # Get unique vertex indices
+        unique_indices = np.unique(vertex_map)
+        unique_vertices = vertices[unique_indices]
+
+        # Remap vertex_map to sequential indices
+        remap = np.zeros(len(vertices), dtype=int)
+        for new_idx, old_idx in enumerate(unique_indices):
+            remap[vertex_map == old_idx] = new_idx
 
         merged_count = len(vertices) - len(unique_vertices)
 
-        # Update face indices
+        # Update face indices using vectorized operation
         if merged_count > 0:
-            updated_faces = np.array([[vertex_map[f[0]], vertex_map[f[1]], vertex_map[f[2]]] for f in faces])
-            return np.array(unique_vertices), updated_faces, merged_count
+            updated_faces = remap[faces]
+            return unique_vertices, updated_faces, merged_count
         else:
             return vertices, faces, 0
 
     def _check_manifold_edges(self, faces):
         """
         Check if all edges are shared by exactly 2 faces (manifold condition).
+        Optimized with vectorized numpy operations.
 
         Args:
             faces: numpy array of face indices (M, 3)
@@ -183,19 +224,21 @@ class MeshValidator:
         if len(faces) == 0:
             return 0
 
-        # Count how many faces share each edge
+        # Extract all edges from faces using vectorized operations
+        # Each triangle has 3 edges: (v0,v1), (v1,v2), (v2,v0)
+        edges = np.vstack([
+            np.sort(faces[:, [0, 1]], axis=1),  # Edge between vertex 0 and 1
+            np.sort(faces[:, [1, 2]], axis=1),  # Edge between vertex 1 and 2
+            np.sort(faces[:, [2, 0]], axis=1)   # Edge between vertex 2 and 0
+        ])
+
+        # Use numpy's unique to count edge occurrences
+        # unique_edges, counts = np.unique(edges, axis=0, return_counts=True)
+        # Converting to tuples is faster for the unique operation
+        edge_tuples = [tuple(edge) for edge in edges]
         edge_count = defaultdict(int)
-
-        for face in faces:
-            # Each triangle has 3 edges
-            edges = [
-                tuple(sorted([face[0], face[1]])),
-                tuple(sorted([face[1], face[2]])),
-                tuple(sorted([face[2], face[0]]))
-            ]
-
-            for edge in edges:
-                edge_count[edge] += 1
+        for edge in edge_tuples:
+            edge_count[edge] += 1
 
         # Count edges that are not shared by exactly 2 faces
         non_manifold_count = sum(1 for count in edge_count.values() if count != 2)

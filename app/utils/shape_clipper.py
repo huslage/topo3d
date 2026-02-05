@@ -84,6 +84,20 @@ class ShapeClipper(ABC):
         """
         pass
 
+    @abstractmethod
+    def project_to_boundary(self, x, z):
+        """
+        Project a point to the nearest point on the shape boundary.
+
+        Args:
+            x: X coordinate
+            z: Z coordinate
+
+        Returns:
+            tuple: (projected_x, projected_z) on the boundary, or None if cannot project
+        """
+        pass
+
 
 class CircleClipper(ShapeClipper):
     """Circular boundary clipper with line-circle intersection."""
@@ -257,7 +271,7 @@ class CircleClipper(ShapeClipper):
             # Top vertex (at terrain)
             wall_vertices.append([x, elevation, z])
             # Bottom vertex (at base)
-            wall_vertices.append([x, base_height, z])
+            wall_vertices.append([x, -base_height, z])
 
         wall_vertices = np.array(wall_vertices)
 
@@ -276,6 +290,20 @@ class CircleClipper(ShapeClipper):
             wall_faces.append([bottom_i, top_next, bottom_next])
 
         return wall_vertices, np.array(wall_faces, dtype=np.int32)
+
+    def project_to_boundary(self, x, z):
+        """Project point to circle boundary."""
+        dx = x - self.center_x
+        dz = z - self.center_z
+        dist = np.sqrt(dx * dx + dz * dz)
+
+        if dist == 0:
+            # Point at center - project to arbitrary point on circle
+            return (self.center_x + self.radius, self.center_z)
+
+        # Scale to radius
+        scale = self.radius / dist
+        return (self.center_x + dx * scale, self.center_z + dz * scale)
 
 
 class SquareClipper(ShapeClipper):
@@ -449,7 +477,7 @@ class SquareClipper(ShapeClipper):
                     elevation = base_height
 
                 wall_vertices.append([x, elevation, z])
-                wall_vertices.append([x, base_height, z])
+                wall_vertices.append([x, -base_height, z])
 
         wall_vertices = np.array(wall_vertices)
 
@@ -467,6 +495,35 @@ class SquareClipper(ShapeClipper):
             wall_faces.append([bottom_i, top_next, bottom_next])
 
         return wall_vertices, np.array(wall_faces, dtype=np.int32)
+
+    def project_to_boundary(self, x, z):
+        """Project point to square boundary."""
+        dx = x - self.center_x
+        dz = z - self.center_z
+
+        # Clamp to square bounds
+        min_x = self.center_x - self.half_width
+        max_x = self.center_x + self.half_width
+        min_z = self.center_z - self.half_width
+        max_z = self.center_z + self.half_width
+
+        # If already on or outside boundary, find nearest edge point
+        if abs(dx) >= abs(dz):
+            # Closer to left/right edge
+            if dx >= 0:
+                # Right edge
+                return (max_x, z)
+            else:
+                # Left edge
+                return (min_x, z)
+        else:
+            # Closer to top/bottom edge
+            if dz >= 0:
+                # Bottom edge
+                return (x, max_z)
+            else:
+                # Top edge
+                return (x, min_z)
 
 
 class RectangleClipper(ShapeClipper):
@@ -635,7 +692,7 @@ class RectangleClipper(ShapeClipper):
                     elevation = base_height
 
                 wall_vertices.append([x, elevation, z])
-                wall_vertices.append([x, base_height, z])
+                wall_vertices.append([x, -base_height, z])
 
         wall_vertices = np.array(wall_vertices)
 
@@ -652,6 +709,35 @@ class RectangleClipper(ShapeClipper):
             wall_faces.append([bottom_i, top_next, bottom_next])
 
         return wall_vertices, np.array(wall_faces, dtype=np.int32)
+
+    def project_to_boundary(self, x, z):
+        """Project point to rectangle boundary."""
+        dx = x - self.center_x
+        dz = z - self.center_z
+
+        # Rectangle bounds
+        min_x = self.center_x - self.half_width
+        max_x = self.center_x + self.half_width
+        min_z = self.center_z - self.half_height
+        max_z = self.center_z + self.half_height
+
+        # Determine which edge is closest
+        # Compare ratio of distance to boundary vs half-dimension
+        ratio_x = abs(dx) / self.half_width if self.half_width > 0 else 0
+        ratio_z = abs(dz) / self.half_height if self.half_height > 0 else 0
+
+        if ratio_x >= ratio_z:
+            # Closer to left/right edge
+            if dx >= 0:
+                return (max_x, z)
+            else:
+                return (min_x, z)
+        else:
+            # Closer to top/bottom edge
+            if dz >= 0:
+                return (x, max_z)
+            else:
+                return (x, min_z)
 
 
 class HexagonClipper(ShapeClipper):
@@ -772,7 +858,7 @@ class HexagonClipper(ShapeClipper):
                     elevation = base_height
 
                 wall_vertices.append([x, elevation, z])
-                wall_vertices.append([x, base_height, z])
+                wall_vertices.append([x, -base_height, z])
 
         wall_vertices = np.array(wall_vertices)
 
@@ -789,3 +875,36 @@ class HexagonClipper(ShapeClipper):
             wall_faces.append([bottom_i, top_next, bottom_next])
 
         return wall_vertices, np.array(wall_faces, dtype=np.int32)
+
+    def project_to_boundary(self, x, z):
+        """Project point to hexagon boundary."""
+        # Find nearest point on each of the 6 edges
+        min_dist_sq = float('inf')
+        nearest_point = None
+
+        for i in range(6):
+            j = (i + 1) % 6
+            v1 = self.vertices[i]
+            v2 = self.vertices[j]
+
+            # Project point onto line segment
+            edge = v2 - v1
+            point_vec = np.array([x, z]) - v1
+            edge_length_sq = np.dot(edge, edge)
+
+            if edge_length_sq == 0:
+                # Degenerate edge
+                projected = v1
+            else:
+                # Parameter t along edge (clamped to [0, 1] for segment)
+                t = max(0, min(1, np.dot(point_vec, edge) / edge_length_sq))
+                projected = v1 + t * edge
+
+            # Distance to this edge
+            dist_sq = (projected[0] - x)**2 + (projected[1] - z)**2
+
+            if dist_sq < min_dist_sq:
+                min_dist_sq = dist_sq
+                nearest_point = projected
+
+        return tuple(nearest_point) if nearest_point is not None else None

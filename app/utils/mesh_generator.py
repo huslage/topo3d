@@ -50,6 +50,9 @@ def generate_mesh(elevation_data, features, options):
         # Scale to model size
         scale_factor = model_width / max(lat_range, lon_range * lon_scale)
 
+        # Size scale factor: all hardcoded dimensions are calibrated for 200mm model
+        size_scale = model_width / 200.0
+
         # Compute elevation normalization (used by terrain and features)
         min_elev = np.min(elevation_grid)
         max_elev = np.max(elevation_grid)
@@ -73,7 +76,8 @@ def generate_mesh(elevation_data, features, options):
             radius = min(lon_scaled, lat_scaled) / 2
             shape_clipper = HexagonClipper(center_x, center_z, radius)
         else:  # 'square' or default
-            half_width = min(lon_scaled, lat_scaled) / 2
+            # Use max dimension to ensure all content (esp. GPX tracks) fits within square
+            half_width = max(lon_scaled, lat_scaled) / 2
             shape_clipper = SquareClipper(center_x, center_z, half_width)
 
         # Generate terrain mesh
@@ -86,7 +90,8 @@ def generate_mesh(elevation_data, features, options):
             vertical_scale,
             base_height,
             include_base,
-            shape_clipper
+            shape_clipper,
+            size_scale
         )
 
         # Add features (roads, buildings, water)
@@ -94,15 +99,30 @@ def generate_mesh(elevation_data, features, options):
         elev_params = {
             'min_elev': min_elev,
             'elev_range': elev_range,
-            'avg_lat': avg_lat
+            'avg_lat': avg_lat,
+            'size_scale': size_scale
         }
 
         feature_meshes = []
 
-        if features.get('buildings'):
-            # Get address location options
-            address_location = options.get('address_location')
-            show_only_address_building = options.get('show_only_address_building', False)
+        address_location = options.get('address_location')
+        show_only_address_building = options.get('show_only_address_building', False)
+
+        if show_only_address_building and address_location:
+            # Create a single synthetic building at the address location
+            building_mesh = create_address_building(
+                address_location,
+                elevation_data,
+                bounds,
+                scale_factor,
+                vertical_scale,
+                elev_params,
+                options.get('building_height_scale', 1.0),
+                shape_clipper
+            )
+            if building_mesh:
+                feature_meshes.append(building_mesh)
+        elif features.get('buildings'):
             custom_building_colors = options.get('custom_building_colors', {})
 
             building_meshes = generate_building_meshes(
@@ -114,7 +134,7 @@ def generate_mesh(elevation_data, features, options):
                 elev_params,
                 options.get('building_height_scale', 1.0),
                 address_location,
-                show_only_address_building,
+                False,
                 shape_clipper,
                 custom_building_colors
             )
@@ -179,7 +199,7 @@ def generate_mesh(elevation_data, features, options):
         raise Exception(f"Error generating mesh: {str(e)}")
 
 
-def generate_terrain_mesh(elevation_grid, lats, lons, bounds, scale_factor, vertical_scale, base_height, include_base, shape_clipper=None):
+def generate_terrain_mesh(elevation_grid, lats, lons, bounds, scale_factor, vertical_scale, base_height, include_base, shape_clipper=None, size_scale=1.0):
     """
     Generate terrain mesh from elevation data.
 
@@ -218,7 +238,7 @@ def generate_terrain_mesh(elevation_grid, lats, lons, bounds, scale_factor, vert
             z = (bounds['north'] - lat) * scale_factor
 
             # Elevation with vertical exaggeration (Y is up in Three.js)
-            y = ((elevation_grid[i, j] - min_elev) / elev_range) * 20.0 * vertical_scale
+            y = ((elevation_grid[i, j] - min_elev) / elev_range) * 20.0 * size_scale * vertical_scale
 
             vertices.append([x, y, z])
 
@@ -259,12 +279,15 @@ def generate_terrain_mesh(elevation_grid, lats, lons, bounds, scale_factor, vert
 
     # Add base if requested
     if include_base:
-        if shape_clipper:
-            base_vertices, base_faces = generate_shape_base(vertices, base_height, shape_clipper)
+        if shape_clipper and not np.all(inside_shape):
+            # Some vertices outside shape - use shape-aware base generation
+            base_vertices, base_faces, vertices = generate_shape_base(vertices, base_height, shape_clipper, rows, cols, inside_shape, faces)
         else:
+            # No shape clipping or all vertices inside shape - use simple rectangular base
             base_vertices, base_faces = generate_base(vertices, base_height, rows, cols)
-        vertices = np.vstack([vertices, base_vertices])
-        faces = np.vstack([faces, base_faces]) if len(faces) > 0 else base_faces
+        if len(base_vertices) > 0 and len(base_faces) > 0:
+            vertices = np.vstack([vertices, base_vertices])
+            faces = np.vstack([faces, base_faces]) if len(faces) > 0 else base_faces
 
     return {
         'vertices': vertices.tolist(),
@@ -357,78 +380,148 @@ def generate_base(vertices, base_height, rows, cols):
     return base_vertices, np.array(base_faces)
 
 
-def generate_shape_base(vertices, base_height, shape_clipper):
+def generate_shape_base(vertices, base_height, shape_clipper, rows, cols, inside_shape, terrain_faces=None):
     """
-    Generate watertight base for any shape using shape clipper.
+    Generate watertight base using terrain boundary edges.
 
-    Creates a smooth wall that follows the terrain contour and a bottom face.
+    Finds actual boundary edges from the terrain faces and builds wall faces
+    that share those edges exactly, ensuring a manifold mesh.
 
     Args:
         vertices: Terrain vertices array
         base_height: Height of base platform
-        shape_clipper: ShapeClipper instance for wall generation
+        shape_clipper: ShapeClipper instance
+        rows: Number of rows in elevation grid
+        cols: Number of columns in elevation grid
+        inside_shape: Boolean mask of which vertices are inside shape
+        terrain_faces: Terrain face array (used to find boundary edges)
 
     Returns:
-        tuple: (base_vertices, base_faces) as numpy arrays
+        tuple: (base_vertices, base_faces, modified_vertices) as numpy arrays
     """
-    base_vertices = []
-    base_faces = []
+    from collections import defaultdict
 
-    n = len(vertices)  # Number of terrain vertices
-
-    # Create elevation interpolation function for the wall
-    def terrain_elevation_func(x, z):
-        """Interpolate elevation at (x, z) from nearest terrain vertices."""
-        # Find closest terrain vertex (simple nearest neighbor)
-        min_dist = float('inf')
-        closest_elev = -base_height
-
-        for v in vertices:
-            vx, vy, vz = v
-            dist_sq = (vx - x)**2 + (vz - z)**2
-            if dist_sq < min_dist:
-                min_dist = dist_sq
-                closest_elev = vy
-
-        return closest_elev
-
-    # Generate wall vertices using shape clipper
-    wall_vertices, wall_faces = shape_clipper.generate_wall_vertices(
-        terrain_elevation_func,
-        base_height
-    )
-
-    # Offset wall face indices by number of terrain vertices
-    wall_faces_offset = wall_faces + n
-
-    # Add wall vertices to base
-    base_vertices.extend(wall_vertices.tolist())
-
-    # Add wall faces
-    base_faces.extend(wall_faces_offset.tolist())
-
-    # Create center point for bottom face
+    vertices = vertices.copy()
+    n = len(vertices)
     center_x = shape_clipper.center_x
     center_z = shape_clipper.center_z
-    center_bottom_idx = n + len(wall_vertices)
+
+    all_inside = np.all(inside_shape)
+
+    if all_inside:
+        # Shape is larger than grid - boundary IS the grid perimeter
+        boundary_indices = []
+        for j in range(cols):
+            boundary_indices.append(j)
+        for i in range(1, rows):
+            boundary_indices.append(i * cols + (cols - 1))
+        for j in range(cols - 2, -1, -1):
+            boundary_indices.append((rows - 1) * cols + j)
+        for i in range(rows - 2, 0, -1):
+            boundary_indices.append(i * cols)
+
+        if len(boundary_indices) < 3:
+            return np.array([]).reshape(0, 3), np.array([]).reshape(0, 3), vertices
+
+        # Project boundary vertices to shape edge
+        for idx in boundary_indices:
+            v = vertices[idx]
+            projected = shape_clipper.project_to_boundary(v[0], v[2])
+            if projected:
+                vertices[idx][0] = projected[0]
+                vertices[idx][2] = projected[1]
+    else:
+        # Find boundary edges from actual terrain faces
+        edge_count = defaultdict(int)
+        if terrain_faces is not None and len(terrain_faces) > 0:
+            for face in terrain_faces:
+                v0, v1, v2 = int(face[0]), int(face[1]), int(face[2])
+                for a, b in [(v0, v1), (v1, v2), (v2, v0)]:
+                    edge = (min(a, b), max(a, b))
+                    edge_count[edge] += 1
+
+        # Boundary edges have exactly 1 face
+        boundary_edge_list = [e for e, c in edge_count.items() if c == 1]
+
+        if not boundary_edge_list:
+            return np.array([]).reshape(0, 3), np.array([]).reshape(0, 3), vertices
+
+        # Build adjacency from boundary edges to walk the loop
+        adjacency = defaultdict(list)
+        for v1, v2 in boundary_edge_list:
+            adjacency[v1].append(v2)
+            adjacency[v2].append(v1)
+
+        # Walk the boundary loop starting from any vertex
+        start = boundary_edge_list[0][0]
+        boundary_indices = [start]
+        visited = {start}
+
+        current = start
+        while True:
+            neighbors = adjacency[current]
+            next_v = None
+            for nb in neighbors:
+                if nb not in visited:
+                    next_v = nb
+                    break
+            if next_v is None:
+                break
+            boundary_indices.append(next_v)
+            visited.add(next_v)
+            current = next_v
+
+        if len(boundary_indices) < 3:
+            return np.array([]).reshape(0, 3), np.array([]).reshape(0, 3), vertices
+
+        # Project boundary vertices to shape edge
+        for idx in boundary_indices:
+            v = vertices[idx]
+            projected = shape_clipper.project_to_boundary(v[0], v[2])
+            if projected:
+                vertices[idx][0] = projected[0]
+                vertices[idx][2] = projected[1]
+
+    num_boundary = len(boundary_indices)
+    print(f"[INFO] generate_shape_base: {num_boundary} boundary vertices in ordered loop")
+
+    # Map boundary vertex index -> position in boundary list
+    boundary_pos = {idx: i for i, idx in enumerate(boundary_indices)}
+
+    # Create base vertices (one below each boundary vertex)
+    base_vertices = []
+    for idx in boundary_indices:
+        v = vertices[idx]
+        base_vertices.append([v[0], -base_height, v[2]])
+
+    # Create wall faces connecting terrain boundary to base vertices
+    wall_faces = []
+    for i in range(num_boundary):
+        next_i = (i + 1) % num_boundary
+
+        terrain_top = boundary_indices[i]
+        terrain_top_next = boundary_indices[next_i]
+        base_bottom = n + i
+        base_bottom_next = n + next_i
+
+        # Two triangles per wall segment (CCW when viewed from outside)
+        wall_faces.append([terrain_top, base_bottom, terrain_top_next])
+        wall_faces.append([terrain_top_next, base_bottom, base_bottom_next])
+
+    base_faces = list(wall_faces)
+
+    # Create center point for bottom face
+    center_bottom_idx = n + num_boundary
     base_vertices.append([center_x, -base_height, center_z])
 
     # Create bottom face using fan triangulation from center
-    # Wall vertices alternate: top, bottom, top, bottom, ...
-    # We need to connect bottom vertices in a circular pattern
-    num_wall_segments = len(wall_vertices) // 2
+    for i in range(num_boundary):
+        next_i = (i + 1) % num_boundary
+        base_bottom = n + i
+        base_bottom_next = n + next_i
+        base_faces.append([center_bottom_idx, base_bottom_next, base_bottom])
 
-    for i in range(num_wall_segments):
-        next_i = (i + 1) % num_wall_segments
-
-        # Bottom vertices are at odd indices: 1, 3, 5, ...
-        bottom_i = n + i * 2 + 1
-        bottom_next = n + next_i * 2 + 1
-
-        # Fan triangle: center, next_bottom, current_bottom (CCW from below)
-        base_faces.append([center_bottom_idx, bottom_next, bottom_i])
-
-    return np.array(base_vertices), np.array(base_faces, dtype=np.int32)
+    return np.array(base_vertices), np.array(base_faces, dtype=np.int32), vertices
 
 
 def generate_circular_base(vertices, base_height, rows, cols, center_x, center_z, radius, inside_circle):
@@ -593,6 +686,61 @@ def interpolate_boundary_elevation(angle, boundary_with_angles):
     return lower_elev + t * (upper_elev - lower_elev)
 
 
+def create_address_building(address_location, elevation_data, bounds, scale_factor, vertical_scale, elev_params, height_scale, shape_clipper=None):
+    """Create a single building at the address location without needing OSM data."""
+    addr_lat = address_location.get('lat')
+    addr_lon = address_location.get('lon')
+    if addr_lat is None or addr_lon is None:
+        return None
+
+    min_elev = elev_params['min_elev']
+    elev_range = elev_params['elev_range']
+    avg_lat = elev_params['avg_lat']
+    size_scale = elev_params.get('size_scale', 1.0)
+
+    # Create a building footprint around the address point (~20m x 20m)
+    building_size_deg = 0.0001  # ~11m in each direction
+    min_lat = addr_lat - building_size_deg
+    max_lat = addr_lat + building_size_deg
+    min_lon = addr_lon - building_size_deg / np.cos(np.radians(avg_lat))
+    max_lon = addr_lon + building_size_deg / np.cos(np.radians(avg_lat))
+
+    # Clamp to bounds
+    min_lat = max(bounds['south'], min_lat)
+    max_lat = min(bounds['north'], max_lat)
+    min_lon = max(bounds['west'], min_lon)
+    max_lon = min(bounds['east'], max_lon)
+
+    # Convert to model space
+    x1 = (min_lon - bounds['west']) * scale_factor * np.cos(np.radians(avg_lat))
+    x2 = (max_lon - bounds['west']) * scale_factor * np.cos(np.radians(avg_lat))
+    z1 = (bounds['north'] - max_lat) * scale_factor
+    z2 = (bounds['north'] - min_lat) * scale_factor
+
+    # Clip to shape boundary if applicable
+    if shape_clipper and not shape_clipper.is_inside(x1, z1):
+        return None
+
+    # Get base elevation
+    raw_elev = interpolate_elevation(addr_lat, addr_lon, elevation_data)
+    base_y = ((raw_elev - min_elev) / elev_range) * 20.0 * size_scale * vertical_scale
+
+    height = 8.0 * height_scale * 0.15 * size_scale
+    height = max(height, 3.0 * size_scale)
+
+    building_mesh = create_box(x1, x2, base_y, base_y + height, z1, z2)
+
+    return {
+        'type': 'building',
+        'id': 'address_building',
+        'name': 'Address Building',
+        'building_type': 'yes',
+        'vertices': building_mesh['vertices'],
+        'faces': building_mesh['faces'],
+        'is_address_building': True
+    }
+
+
 def create_box(x1, x2, y1, y2, z1, z2):
     """Create a simple box mesh from min/max coordinates."""
     # 8 vertices of the box
@@ -652,6 +800,7 @@ def generate_building_meshes(buildings, elevation_data, bounds, scale_factor, ve
     min_elev = elev_params['min_elev']
     elev_range = elev_params['elev_range']
     avg_lat = elev_params['avg_lat']
+    size_scale = elev_params.get('size_scale', 1.0)
 
     # Initialize building shape generator
     building_shape_gen = BuildingShapeGenerator()
@@ -689,7 +838,10 @@ def generate_building_meshes(buildings, elevation_data, bounds, scale_factor, ve
 
             print(f"Address building ID: {address_building_id}, distance: {min_distance if address_building_id else 'N/A'}")
 
-    for building in buildings[:150]:  # Limit to avoid too many polygons
+    # When showing only the address building, don't apply the 150-building limit
+    # since the address building may be beyond that index
+    building_list = buildings if show_only_address_building else buildings[:150]
+    for building in building_list:
         coords = building['coordinates']
         if len(coords) < 3:
             continue
@@ -721,9 +873,9 @@ def generate_building_meshes(buildings, elevation_data, bounds, scale_factor, ve
 
         # Get building height (scale to model units)
         # Make address building taller to stand out more
-        height = building.get('height', 8.0) * height_scale * 0.15
+        height = building.get('height', 8.0) * height_scale * 0.15 * size_scale
         if is_address_building:
-            height = max(height, 3.0)  # Ensure minimum height for visibility
+            height = max(height, 3.0 * size_scale)  # Ensure minimum height for visibility
 
         # Convert bounding box corners to model space
         x1 = (min_lon - bounds['west']) * scale_factor * np.cos(np.radians(avg_lat))
@@ -747,7 +899,7 @@ def generate_building_meshes(buildings, elevation_data, bounds, scale_factor, ve
         center_lat = (min_lat + max_lat) / 2
         center_lon = (min_lon + max_lon) / 2
         raw_elev = interpolate_elevation(center_lat, center_lon, elevation_data)
-        base_y = ((raw_elev - min_elev) / elev_range) * 20.0 * vertical_scale
+        base_y = ((raw_elev - min_elev) / elev_range) * 20.0 * size_scale * vertical_scale
 
         # Determine building shape based on tags
         building_tags = building.get('tags', {})
@@ -799,6 +951,9 @@ def generate_road_meshes(roads, elevation_data, bounds, scale_factor, vertical_s
     min_elev = elev_params['min_elev']
     elev_range = elev_params['elev_range']
     avg_lat = elev_params['avg_lat']
+    size_scale = elev_params.get('size_scale', 1.0)
+
+    road_height = road_height * size_scale
 
     for road in roads[:200]:  # Limit to avoid too many
         coords = road['coordinates']
@@ -825,7 +980,7 @@ def generate_road_meshes(roads, elevation_data, bounds, scale_factor, vertical_s
 
             # Get normalized elevation and raise slightly above terrain
             raw_elev = interpolate_elevation(lat, lon, elevation_data)
-            y = ((raw_elev - min_elev) / elev_range) * 20.0 * vertical_scale + road_height
+            y = ((raw_elev - min_elev) / elev_range) * 20.0 * size_scale * vertical_scale + road_height
 
             points_xz.append((x, z))
             points_xyz.append([x, y, z])
@@ -865,7 +1020,7 @@ def generate_road_meshes(roads, elevation_data, bounds, scale_factor, vertical_s
                 segment_points_3d = np.array(segment_points_3d)
 
                 # Create road strip for this segment
-                road_mesh = create_road_strip(segment_points_3d, width=1.0)
+                road_mesh = create_road_strip(segment_points_3d, width=1.0 * size_scale)
 
                 meshes.append({
                     'type': 'road',
@@ -880,7 +1035,7 @@ def generate_road_meshes(roads, elevation_data, bounds, scale_factor, vertical_s
             points_xyz = np.array(points_xyz)
 
             # Create road as line with width
-            road_mesh = create_road_strip(points_xyz, width=1.0)
+            road_mesh = create_road_strip(points_xyz, width=1.0 * size_scale)
 
             meshes.append({
                 'type': 'road',
@@ -914,6 +1069,7 @@ def generate_water_meshes(water_features, elevation_data, bounds, scale_factor, 
     min_elev = elev_params['min_elev']
     elev_range = elev_params['elev_range']
     avg_lat = elev_params['avg_lat']
+    size_scale = elev_params.get('size_scale', 1.0)
 
     for water in water_features[:50]:  # Limit water features
         coords = water['coordinates']
@@ -928,19 +1084,22 @@ def generate_water_meshes(water_features, elevation_data, bounds, scale_factor, 
             continue
 
         # Convert coordinates to model space (Three.js: X=east-west, Y=up, Z=north-south)
-        # For water, use minimum elevation of all points to create flat surface
-        min_water_elev = float('inf')
+        # For water, use AVERAGE elevation of perimeter points to represent water surface
+        # Water bodies in real life have a flat surface, not following terrain beneath
+        perimeter_elevations = []
         for coord in coords:
             lat = max(bounds['south'], min(bounds['north'], coord['lat']))
             lon = max(bounds['west'], min(bounds['east'], coord['lon']))
             raw_elev = interpolate_elevation(lat, lon, elevation_data)
-            min_water_elev = min(min_water_elev, raw_elev)
+            perimeter_elevations.append(raw_elev)
 
-        # Normalize the water level - ensure it's always visible above terrain base (Y=0)
-        # Don't subtract offset for lakes at minimum elevation (like crater lakes)
-        water_y = ((min_water_elev - min_elev) / elev_range) * 20.0 * vertical_scale
-        # Ensure water is at least at Y=0.2 so it's visible on the surface
-        water_y = max(0.2, water_y - 0.3)  # Slight offset to sit in terrain, but never below Y=0.2
+        # Use average of perimeter elevations as water surface level
+        avg_water_elev = np.mean(perimeter_elevations) if perimeter_elevations else min_elev
+
+        # Normalize the water level
+        water_y = ((avg_water_elev - min_elev) / elev_range) * 20.0 * size_scale * vertical_scale
+        # Add offset to lift water above terrain surface for visibility
+        water_y = max(0.5 * size_scale, water_y + 0.5 * size_scale)
 
         # Convert all coordinates to model space
         points_xz = []  # (x, z) for clipping
@@ -958,28 +1117,22 @@ def generate_water_meshes(water_features, elevation_data, bounds, scale_factor, 
 
             points_xz.append((x, z))
 
-        # Clip polygon to shape boundary
+        # Clip water polygon to shape boundary
         if shape_clipper:
-            clipped_polygon = shape_clipper.clip_polygon(points_xz)
-            if clipped_polygon is None or len(clipped_polygon) < 3:
+            # Filter to only vertices inside the shape
+            clipped_xz = [(x, z) for x, z in points_xz if shape_clipper.is_inside(x, z)]
+            if len(clipped_xz) < 3:
                 continue
+            points_xz = clipped_xz
 
-            # Create 3D points with water elevation
-            points_3d = []
-            for x, z in clipped_polygon:
-                points_3d.append([x, water_y, z])
-
-            points = np.array(points_3d)
-        else:
-            # No clipping - use all points
-            points = np.array([[x, water_y, z] for x, z in points_xz])
+        points = np.array([[x, water_y, z] for x, z in points_xz])
 
         # Skip if not enough points
         if len(points) < 3:
             continue
 
         # Create solid water body with thickness for 3D printing
-        water_mesh = create_solid_polygon(points, thickness=0.5)
+        water_mesh = create_solid_polygon(points, thickness=0.5 * size_scale)
 
         meshes.append({
             'type': 'water',
@@ -1011,6 +1164,7 @@ def generate_gpx_track_mesh(gpx_tracks, elevation_data, bounds, scale_factor, ve
     min_elev = elev_params['min_elev']
     elev_range = elev_params['elev_range']
     avg_lat = elev_params['avg_lat']
+    size_scale = elev_params.get('size_scale', 1.0)
 
     # Convert all track points to model space first
     all_points_xz = []
@@ -1042,48 +1196,21 @@ def generate_gpx_track_mesh(gpx_tracks, elevation_data, bounds, scale_factor, ve
             x = (lon - bounds['west']) * scale_factor * np.cos(np.radians(avg_lat))
             z = (bounds['north'] - lat) * scale_factor
 
-            # Elevation - sit above roads (roads are at +0.2, so GPX at +0.5)
-            y = ((raw_elev - min_elev) / elev_range) * 20.0 * vertical_scale + 0.5  # Above roads
+            # Elevation - sit slightly above terrain to be visible (roads are at +0.2, GPX at +0.3)
+            y = ((raw_elev - min_elev) / elev_range) * 20.0 * size_scale * vertical_scale + 0.3 * size_scale
 
             all_points_xz.append((x, z))
             all_points_xyz.append([x, y, z])
 
-    if len(all_points_xz) < 2:
+    if len(all_points_xyz) < 2:
         return None
 
-    # Clip track to shape boundary (preserving continuity)
-    if shape_clipper:
-        clipped_segments = shape_clipper.clip_linestring(all_points_xz)
-
-        # Combine all segments for GPX track (or process separately if needed)
-        all_clipped_points = []
-        for segment in clipped_segments:
-            if len(segment) < 2:
-                continue
-
-            # Find corresponding 3D points
-            for sx, sz in segment:
-                min_dist = float('inf')
-                closest_point = None
-                for px, py, pz in all_points_xyz:
-                    dist_sq = (px - sx)**2 + (pz - sz)**2
-                    if dist_sq < min_dist:
-                        min_dist = dist_sq
-                        closest_point = [px, py, pz]
-
-                if closest_point:
-                    all_clipped_points.append([sx, closest_point[1], sz])
-
-        if len(all_clipped_points) < 2:
-            return None
-
-        points = np.array(all_clipped_points)
-    else:
-        # No clipping - use all points
-        points = np.array(all_points_xyz)
+    # Don't clip GPX track to shape boundary - preserve natural track path
+    # The GPX track should show the actual route, not be cut off at shape boundaries
+    points = np.array(all_points_xyz)
 
     # Create track as a 3D-printable strip (wider and thicker than roads)
-    track_mesh = create_road_strip(points, width=2.5, thickness=0.5)
+    track_mesh = create_road_strip(points, width=2.5 * size_scale, thickness=0.5 * size_scale)
 
     return {
         'type': 'gpx_track',
@@ -1229,6 +1356,65 @@ def create_solid_polygon(points, thickness=0.5):
     if n < 3:
         return {'vertices': [], 'faces': []}
 
+    # Merge non-consecutive near-duplicate vertices (common in OSM water polygons
+    # where the boundary visits the same point twice, e.g. at pinch points)
+    from scipy.spatial import cKDTree
+    tree = cKDTree(points[:, [0, 2]])  # Match in XZ plane
+    pairs = tree.query_pairs(r=1e-4)  # Find near-duplicate pairs
+    if pairs:
+        # Build mapping: for each duplicate, map to the lowest index
+        remap = list(range(n))
+        for i, j in pairs:
+            lo, hi = min(i, j), max(i, j)
+            remap[hi] = lo
+        # Resolve chains (if a→b→c, make a→c and b→c)
+        for i in range(n):
+            while remap[i] != remap[remap[i]]:
+                remap[i] = remap[remap[i]]
+        # Rebuild points list removing duplicates but preserving order
+        keep = [i for i in range(n) if remap[i] == i]
+        old_to_new = {}
+        for new_idx, old_idx in enumerate(keep):
+            old_to_new[old_idx] = new_idx
+        # Map all remapped indices
+        index_map = [old_to_new[remap[i]] for i in range(n)]
+        # Rebuild polygon: walk original order but use remapped indices, skip consecutive dupes
+        new_indices = []
+        for i in range(n):
+            mapped = index_map[i]
+            if len(new_indices) == 0 or mapped != new_indices[-1]:
+                new_indices.append(mapped)
+        # Remove wrap-around duplicate
+        if len(new_indices) > 1 and new_indices[0] == new_indices[-1]:
+            new_indices.pop()
+        points = points[keep]
+        n = len(points)
+        print(f"Water polygon: merged {len(pairs)} duplicate vertex pairs, {n} unique vertices")
+
+    if n < 3:
+        return {'vertices': [], 'faces': []}
+
+    # Remove collinear vertices (common in OSM data where straight edges have many nodes).
+    # Collinear vertices cause ear-clipping to fail because the cross product is zero.
+    non_collinear = []
+    for i in range(n):
+        prev_i = (i - 1) % n
+        next_i = (i + 1) % n
+        ax, az = points[prev_i, 0], points[prev_i, 2]
+        bx, bz = points[i, 0], points[i, 2]
+        cx, cz = points[next_i, 0], points[next_i, 2]
+        cross = (bx - ax) * (cz - az) - (bz - az) * (cx - ax)
+        if abs(cross) > 1e-10:
+            non_collinear.append(i)
+    if len(non_collinear) < n and len(non_collinear) >= 3:
+        removed = n - len(non_collinear)
+        points = points[non_collinear]
+        n = len(points)
+        print(f"Water polygon: removed {removed} collinear vertices, {n} remaining")
+
+    if n < 3:
+        return {'vertices': [], 'faces': []}
+
     vertices = []
     faces = []
 
@@ -1273,6 +1459,27 @@ def create_solid_polygon(points, thickness=0.5):
 
     print(f"Water mesh: {len(vertices)} vertices, {len(faces)} faces")
 
+    # Diagnostic: count non-manifold edges in this water mesh
+    from collections import defaultdict
+    edge_count = defaultdict(int)
+    for f in faces:
+        for a, b in [(f[0], f[1]), (f[1], f[2]), (f[2], f[0])]:
+            edge = (min(a, b), max(a, b))
+            edge_count[edge] += 1
+    non_manifold = [(e, c) for e, c in edge_count.items() if c != 2]
+    if non_manifold:
+        count_1 = sum(1 for _, c in non_manifold if c == 1)
+        count_3plus = sum(1 for _, c in non_manifold if c >= 3)
+        print(f"[DIAG] Water non-manifold edges: {len(non_manifold)} total ({count_1} with 1 face, {count_3plus} with 3+ faces)")
+        # Show a few examples
+        for e, c in non_manifold[:5]:
+            v0, v1 = e
+            is_top = v0 < n and v1 < n
+            is_bot = v0 >= n and v1 >= n
+            is_wall = (v0 < n) != (v1 < n)
+            loc = "top" if is_top else ("bottom" if is_bot else "wall-diagonal")
+            print(f"[DIAG]   Edge ({v0},{v1}) count={c} location={loc}")
+
     return {
         'vertices': vertices,
         'faces': faces
@@ -1280,94 +1487,115 @@ def create_solid_polygon(points, thickness=0.5):
 
 
 def triangulate_polygon(points_2d):
-    """Triangulate a 2D polygon using ear-clipping algorithm.
+    """Triangulate a 2D polygon using ear-clipping.
+
+    Ear-clipping preserves all polygon boundary edges, which is critical
+    for manifold mesh generation (walls reference boundary edges).
 
     Args:
         points_2d: Nx2 numpy array of 2D points forming polygon boundary
 
     Returns:
-        List of triangle index triplets
+        List of triangle index triplets (indices into original points_2d)
     """
     n = len(points_2d)
     if n < 3:
         return []
+    if n == 3:
+        return [[0, 1, 2]]
 
-    # Work with indices
+    points_2d = np.array(points_2d, dtype=np.float64)
+
+    # Determine polygon winding (need CCW for ear-clipping)
+    # Shoelace formula for signed area
+    signed_area = 0.0
+    for i in range(n):
+        j = (i + 1) % n
+        signed_area += points_2d[i, 0] * points_2d[j, 1]
+        signed_area -= points_2d[j, 0] * points_2d[i, 1]
+    ccw = signed_area > 0
+
+    # Build index list (we remove vertices as we clip ears)
     indices = list(range(n))
     triangles = []
 
-    # Determine polygon winding (clockwise or counter-clockwise)
-    area = 0
-    for i in range(n):
-        j = (i + 1) % n
-        area += points_2d[i, 0] * points_2d[j, 1]
-        area -= points_2d[j, 0] * points_2d[i, 1]
-    ccw = area > 0
+    def cross_2d(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
 
-    # Ear clipping
-    max_iterations = n * n  # Prevent infinite loops
+    def is_ear(idx_list, pos, pts, is_ccw):
+        """Check if vertex at position pos in idx_list is an ear."""
+        m = len(idx_list)
+        prev_pos = (pos - 1) % m
+        next_pos = (pos + 1) % m
+
+        a = pts[idx_list[prev_pos]]
+        b = pts[idx_list[pos]]
+        c = pts[idx_list[next_pos]]
+
+        # Check if this vertex is convex (cross product sign matches winding)
+        cross = cross_2d(a, b, c)
+        if is_ccw and cross <= 1e-12:
+            return False
+        if not is_ccw and cross >= -1e-12:
+            return False
+
+        # Check that no other polygon vertex is inside this triangle
+        for j in range(m):
+            if j == prev_pos or j == pos or j == next_pos:
+                continue
+            p = pts[idx_list[j]]
+            # Point-in-triangle test using barycentric coordinates
+            d1 = cross_2d(a, b, p)
+            d2 = cross_2d(b, c, p)
+            d3 = cross_2d(c, a, p)
+            has_neg = (d1 < -1e-12) or (d2 < -1e-12) or (d3 < -1e-12)
+            has_pos = (d1 > 1e-12) or (d2 > 1e-12) or (d3 > 1e-12)
+            if not (has_neg and has_pos):
+                # Point is inside or on edge of triangle
+                return False
+        return True
+
+    max_iterations = n * n  # Safety limit
     iteration = 0
-
     while len(indices) > 3 and iteration < max_iterations:
-        iteration += 1
         ear_found = False
-
-        for i in range(len(indices)):
-            prev_i = (i - 1) % len(indices)
-            next_i = (i + 1) % len(indices)
-
-            prev_idx = indices[prev_i]
-            curr_idx = indices[i]
-            next_idx = indices[next_i]
-
-            # Check if this is a valid ear
-            if is_ear(points_2d, indices, prev_i, i, next_i, ccw):
-                triangles.append([prev_idx, curr_idx, next_idx])
+        m = len(indices)
+        for i in range(m):
+            if is_ear(indices, i, points_2d, ccw):
+                prev_pos = (i - 1) % m
+                next_pos = (i + 1) % m
+                triangles.append([indices[prev_pos], indices[i], indices[next_pos]])
                 indices.pop(i)
                 ear_found = True
                 break
-
         if not ear_found:
-            # No ear found, polygon might be degenerate
-            # Fall back to fan triangulation from first vertex
-            print(f"Ear clipping stuck at {len(indices)} vertices, using fan fallback")
-            first = indices[0]
+            # No ear found - polygon may be degenerate
+            # Use remaining vertices as fan triangulation fallback
             for i in range(1, len(indices) - 1):
-                triangles.append([first, indices[i], indices[i + 1]])
+                triangles.append([indices[0], indices[i], indices[i + 1]])
             break
+        iteration += 1
 
-    # Handle remaining triangle
+    # Add last triangle
     if len(indices) == 3:
         triangles.append([indices[0], indices[1], indices[2]])
 
     return triangles
 
 
-def is_ear(points_2d, indices, prev_i, curr_i, next_i, ccw):
-    """Check if vertex at curr_i forms a valid ear."""
-    prev_idx = indices[prev_i]
-    curr_idx = indices[curr_i]
-    next_idx = indices[next_i]
-
-    p0 = points_2d[prev_idx]
-    p1 = points_2d[curr_idx]
-    p2 = points_2d[next_idx]
-
-    # Check if triangle is convex (correct winding)
-    cross = (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p1[1] - p0[1]) * (p2[0] - p0[0])
-    if ccw and cross <= 0:
-        return False
-    if not ccw and cross >= 0:
-        return False
-
-    # Check if any other vertex is inside this triangle
-    for i, idx in enumerate(indices):
-        if idx in (prev_idx, curr_idx, next_idx):
-            continue
-        if point_in_triangle(points_2d[idx], p0, p1, p2):
-            return False
-
-    return True
+def _point_in_polygon(point, polygon):
+    """Ray casting algorithm to check if point is inside polygon."""
+    x, y = point
+    n = len(polygon)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon[i]
+        xj, yj = polygon[j]
+        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
 
 
 def point_in_triangle(p, a, b, c):
