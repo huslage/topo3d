@@ -7,6 +7,8 @@ Web application for creating 3D printable topographical models from GPX files an
 import os
 import time
 import uuid
+import requests
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 from flask import Flask, render_template, request, jsonify, send_file
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
@@ -21,8 +23,12 @@ from utils.app_config import (
     get_cors_origins,
     get_default_building_source_mode,
     get_default_terrain_source_mode,
+    get_cesium_ion_token,
+    get_cesium_osm_asset_id,
+    get_cesium_timeout_seconds,
     parse_env_bool,
 )
+from utils.cesium_tiles_provider import CESIUM_ION_ENDPOINT_TEMPLATE
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": get_cors_origins()}})
@@ -35,7 +41,11 @@ CLEANUP_MAX_AGE_SECONDS = int(os.getenv('TOPO3D_FILE_TTL_SECONDS', str(24 * 3600
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['EXPORT_FOLDER'] = EXPORT_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+# Export requests include full mesh JSON and can exceed 16MB at final quality.
+# Keep configurable for environments with tighter limits.
+app.config['MAX_CONTENT_LENGTH'] = int(
+    os.getenv('TOPO3D_MAX_CONTENT_LENGTH_MB', '256')
+) * 1024 * 1024
 
 # Ensure directories exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -147,6 +157,78 @@ def geocode():
         })
 
     except Exception as e:
+        print(f"[ERROR] Geocode failed for '{address}': {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/cesium-diagnose', methods=['GET'])
+def cesium_diagnose():
+    """Diagnose Cesium asset endpoint + tileset access."""
+    try:
+        token = get_cesium_ion_token()
+        if not token:
+            return jsonify({'error': 'CESIUM_ION_TOKEN is not configured'}), 500
+
+        asset_id = get_cesium_osm_asset_id()
+        asset_url = f"https://api.cesium.com/v1/assets/{asset_id}"
+        endpoint_url = CESIUM_ION_ENDPOINT_TEMPLATE.format(asset_id=asset_id)
+        timeout = get_cesium_timeout_seconds()
+        headers = {"Authorization": f"Bearer {token}"}
+
+        asset_resp = requests.get(asset_url, headers=headers, timeout=timeout)
+        asset_payload = {
+            "status": asset_resp.status_code,
+            "ok": asset_resp.ok,
+            "body": asset_resp.text[:500],
+        }
+        if not asset_resp.ok:
+            print(
+                "[ERROR] Cesium diagnose asset fetch failed:"
+                f" status={asset_resp.status_code} url={asset_url} body={asset_resp.text[:500]!r}"
+            )
+
+        endpoint_resp = requests.get(endpoint_url, headers=headers, timeout=timeout)
+        endpoint_payload = {
+            "status": endpoint_resp.status_code,
+            "ok": endpoint_resp.ok,
+            "body": endpoint_resp.text[:500],
+        }
+        if not endpoint_resp.ok:
+            print(
+                "[ERROR] Cesium diagnose endpoint fetch failed:"
+                f" status={endpoint_resp.status_code} url={endpoint_url} body={endpoint_resp.text[:500]!r}"
+            )
+            return jsonify({"asset": asset_payload, "endpoint": endpoint_payload}), 502
+
+        endpoint = endpoint_resp.json()
+        tileset_url = (endpoint.get("url") or "").strip()
+        access_token = endpoint.get("accessToken", token)
+        if tileset_url and access_token:
+            parsed = urlparse(tileset_url)
+            query = dict(parse_qsl(parsed.query))
+            query["access_token"] = access_token
+            tileset_url = urlunparse(parsed._replace(query=urlencode(query)))
+
+        tileset_resp = requests.get(tileset_url, timeout=timeout)
+        tileset_payload = {
+            "status": tileset_resp.status_code,
+            "ok": tileset_resp.ok,
+            "body": tileset_resp.text[:500],
+        }
+        if not tileset_resp.ok:
+            print(
+                "[ERROR] Cesium diagnose tileset fetch failed:"
+                f" status={tileset_resp.status_code} url={tileset_url} body={tileset_resp.text[:500]!r}"
+            )
+            return jsonify({"asset": asset_payload, "endpoint": endpoint_payload, "tileset": tileset_payload}), 502
+
+        return jsonify({
+            "asset": asset_payload,
+            "endpoint": endpoint_payload,
+            "tileset": tileset_payload,
+        })
+    except Exception as e:
+        print(f"[ERROR] Cesium diagnose failed: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -157,43 +239,29 @@ def get_elevation():
         data = request.get_json()
         bounds = data.get('bounds', {})
         resolution = data.get('resolution', 120)
-        source_mode = data.get('source_mode', get_default_terrain_source_mode())
         preview_mode = parse_env_bool(data.get('preview_mode'), default=False)
+        # Preview uses hybrid (tries Cesium, falls back automatically); final forces high-detail DEM terrain.
+        # Cesium building meshes still come from tiles in mesh generation.
+        source_mode = 'hybrid' if preview_mode else 'default'
 
         if not all(k in bounds for k in ['north', 'south', 'east', 'west']):
             return jsonify({'error': 'Invalid bounds provided'}), 400
 
-        terrain_fallback_reason = None
-        try:
-            elevation_data = fetch_elevation_data(
-                bounds['north'],
-                bounds['south'],
-                bounds['east'],
-                bounds['west'],
-                resolution,
-                source_mode=source_mode,
-                preview_mode=preview_mode
-            )
-        except Exception as exc:
-            if source_mode == 'hybrid':
-                terrain_fallback_reason = str(exc)
-                elevation_data = fetch_elevation_data(
-                    bounds['north'],
-                    bounds['south'],
-                    bounds['east'],
-                    bounds['west'],
-                    resolution,
-                    source_mode='default',
-                    preview_mode=preview_mode
-                )
-            else:
-                raise
+        elevation_data = fetch_elevation_data(
+            bounds['north'],
+            bounds['south'],
+            bounds['east'],
+            bounds['west'],
+            resolution,
+            source_mode=source_mode,
+            preview_mode=preview_mode
+        )
 
         return jsonify({
             'success': True,
             'elevation': elevation_data,
             'source': elevation_data.get('source', 'default'),
-            'fallback_reason': terrain_fallback_reason or elevation_data.get('fallback_reason')
+            'fallback_reason': elevation_data.get('fallback_reason')
         })
 
     except Exception as e:

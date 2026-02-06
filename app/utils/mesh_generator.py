@@ -8,10 +8,32 @@ from scipy.spatial import Delaunay
 from .shape_clipper import CircleClipper, SquareClipper, RectangleClipper, HexagonClipper
 from .building_shapes import BuildingShapeGenerator
 from .app_config import get_default_building_source_mode
-from .cesium_tiles_provider import fetch_cesium_building_meshes
+from .cesium_tiles_provider import fetch_cesium_building_meshes, fetch_cesium_address_building_mesh
 
 _ELEVATION_PREP_CACHE = {}
 _ELEVATION_SAMPLE_CACHE_LIMIT = 50000
+
+
+def _prepare_elevation_normalization(elevation_grid, source="default"):
+    """Compute robust elevation normalization to avoid outlier-flattened terrain."""
+    finite = np.asarray(elevation_grid, dtype=np.float64)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return 0.0, 1.0
+
+    raw_min = float(np.min(finite))
+    raw_max = float(np.max(finite))
+    if raw_max <= raw_min:
+        return raw_min, 1.0
+
+    # Cesium samples can include sparse outliers; trim tails to preserve local relief.
+    if str(source).lower() == "cesium":
+        p_low = float(np.percentile(finite, 2.0))
+        p_high = float(np.percentile(finite, 98.0))
+        if p_high > p_low and (p_high - p_low) >= 1.0:
+            return p_low, (p_high - p_low)
+
+    return raw_min, (raw_max - raw_min)
 
 
 def _enforce_min_footprint(x1, x2, z1, z2, min_dim_mm):
@@ -70,9 +92,10 @@ def generate_mesh(elevation_data, features, options):
         size_scale = model_width / 200.0
 
         # Compute elevation normalization (used by terrain and features)
-        min_elev = np.min(elevation_grid)
-        max_elev = np.max(elevation_grid)
-        elev_range = max_elev - min_elev if max_elev > min_elev else 1.0
+        min_elev, elev_range = _prepare_elevation_normalization(
+            elevation_grid,
+            elevation_data.get('source', 'default')
+        )
 
         # Instantiate shape clipper
         lat_scaled = lat_range * scale_factor
@@ -107,7 +130,8 @@ def generate_mesh(elevation_data, features, options):
             base_height,
             include_base,
             shape_clipper,
-            size_scale
+            size_scale,
+            elevation_data.get('source', 'default')
         )
 
         # Add features (roads, buildings, water)
@@ -136,20 +160,52 @@ def generate_mesh(elevation_data, features, options):
             building_mode = get_default_building_source_mode()
 
         if show_only_address_building and address_location:
-            # Create a single synthetic building at the address location
-            building_mesh = create_address_building(
-                address_location,
-                elevation_data,
-                bounds,
-                scale_factor,
-                vertical_scale,
-                elev_params,
-                options.get('building_height_scale', 1.0),
-                shape_clipper
-            )
-            if building_mesh:
-                feature_meshes.append(building_mesh)
-                building_source_used = 'osm_extrude'
+            addr_lat = address_location.get('lat')
+            addr_lon = address_location.get('lon')
+            if addr_lat is not None and addr_lon is not None:
+                try:
+                    raw_elev = interpolate_elevation(addr_lat, addr_lon, elevation_data)
+                    options['_address_surface_y'] = (
+                        ((raw_elev - min_elev) / elev_range) * 20.0 * size_scale * vertical_scale
+                    )
+                except Exception:
+                    options['_address_surface_y'] = None
+            if building_mode in {'tiles', 'hybrid'}:
+                try:
+                    building_mesh = fetch_cesium_address_building_mesh(
+                        address_location,
+                        bounds,
+                        scale_factor,
+                        vertical_scale,
+                        elev_params,
+                        options
+                    )
+                    if building_mesh:
+                        feature_meshes.append(building_mesh)
+                        building_source_used = 'tiles'
+                    else:
+                        fallback_reasons['building'] = fallback_reasons['building'] or (
+                            'No Cesium address building mesh returned'
+                        )
+                except Exception as exc:
+                    print(f"[ERROR] Cesium address building mesh failed: {exc}")
+                    fallback_reasons['building'] = str(exc)
+
+            # Fallback to synthetic address building if Cesium path fails or is not selected.
+            if building_source_used != 'tiles':
+                building_mesh = create_address_building(
+                    address_location,
+                    elevation_data,
+                    bounds,
+                    scale_factor,
+                    vertical_scale,
+                    elev_params,
+                    options.get('building_height_scale', 1.0),
+                    shape_clipper
+                )
+                if building_mesh:
+                    feature_meshes.append(building_mesh)
+                    building_source_used = 'osm_extrude'
         elif building_mode == 'osm_extrude':
             custom_building_colors = options.get('custom_building_colors', {})
             building_meshes = generate_building_meshes(
@@ -178,6 +234,7 @@ def generate_mesh(elevation_data, features, options):
                     options,
                     shape_clipper
                 )
+                print(f"[INFO] Cesium tiles building meshes: {len(tile_meshes)}")
                 feature_meshes.extend(tile_meshes)
                 building_source_used = 'tiles' if tile_meshes else 'none'
                 if not tile_meshes:
@@ -198,6 +255,7 @@ def generate_mesh(elevation_data, features, options):
                     options,
                     shape_clipper
                 )
+                print(f"[INFO] Cesium tiles building meshes: {len(tile_meshes)}")
             except Exception as exc:
                 tile_error = str(exc)
 
@@ -266,6 +324,12 @@ def generate_mesh(elevation_data, features, options):
                 shape_clipper
             )
 
+        feature_type_counts = {}
+        for feature in feature_meshes:
+            ftype = feature.get('type') if isinstance(feature, dict) else None
+            if ftype:
+                feature_type_counts[ftype] = feature_type_counts.get(ftype, 0) + 1
+
         return {
             'terrain': terrain_mesh,
             'features': feature_meshes,
@@ -280,6 +344,7 @@ def generate_mesh(elevation_data, features, options):
                 'vertices_count': len(terrain_mesh['vertices']),
                 'faces_count': len(terrain_mesh['faces']),
                 'features_count': len(feature_meshes),
+                'feature_type_counts': feature_type_counts,
                 'building_source_used': building_source_used,
                 'terrain_source_used': terrain_source_used,
                 'fallback_reasons': fallback_reasons
@@ -290,7 +355,7 @@ def generate_mesh(elevation_data, features, options):
         raise Exception(f"Error generating mesh: {str(e)}")
 
 
-def generate_terrain_mesh(elevation_grid, lats, lons, bounds, scale_factor, vertical_scale, base_height, include_base, shape_clipper=None, size_scale=1.0):
+def generate_terrain_mesh(elevation_grid, lats, lons, bounds, scale_factor, vertical_scale, base_height, include_base, shape_clipper=None, size_scale=1.0, elevation_source="default"):
     """
     Generate terrain mesh from elevation data.
 
@@ -310,10 +375,9 @@ def generate_terrain_mesh(elevation_grid, lats, lons, bounds, scale_factor, vert
     # Average latitude for longitude scaling
     avg_lat = (bounds['north'] + bounds['south']) / 2
 
-    # Normalize elevations
-    min_elev = np.min(elevation_grid)
-    max_elev = np.max(elevation_grid)
-    elev_range = max_elev - min_elev if max_elev > min_elev else 1.0
+    # Normalize elevations with robust clipping to avoid outlier-flattened terrain.
+    min_elev, elev_range = _prepare_elevation_normalization(elevation_grid, elevation_source)
+    max_elev = min_elev + elev_range
 
     # Generate vertices
     # Three.js coordinate system: X = east-west, Y = up (elevation), Z = south-north (flipped for map view)
@@ -329,7 +393,12 @@ def generate_terrain_mesh(elevation_grid, lats, lons, bounds, scale_factor, vert
             z = (bounds['north'] - lat) * scale_factor
 
             # Elevation with vertical exaggeration (Y is up in Three.js)
-            y = ((elevation_grid[i, j] - min_elev) / elev_range) * 20.0 * size_scale * vertical_scale
+            elev = float(elevation_grid[i, j])
+            if elev < min_elev:
+                elev = min_elev
+            elif elev > max_elev:
+                elev = max_elev
+            y = ((elev - min_elev) / elev_range) * 20.0 * size_scale * vertical_scale
 
             vertices.append([x, y, z])
 
@@ -1056,6 +1125,8 @@ def generate_road_meshes(roads, elevation_data, bounds, scale_factor, vertical_s
     size_scale = elev_params.get('size_scale', 1.0)
 
     road_height = road_height * size_scale
+    road_relief = max(road_height, 0.6 * size_scale)
+    road_thickness = max(0.9 * size_scale, road_relief)
 
     for road in roads[:200]:  # Limit to avoid too many
         coords = road['coordinates']
@@ -1082,7 +1153,7 @@ def generate_road_meshes(roads, elevation_data, bounds, scale_factor, vertical_s
 
             # Get normalized elevation and raise slightly above terrain
             raw_elev = interpolate_elevation(lat, lon, elevation_data)
-            y = ((raw_elev - min_elev) / elev_range) * 20.0 * size_scale * vertical_scale + road_height
+            y = ((raw_elev - min_elev) / elev_range) * 20.0 * size_scale * vertical_scale + road_relief
 
             points_xz.append((x, z))
             points_xyz.append([x, y, z])
@@ -1122,7 +1193,11 @@ def generate_road_meshes(roads, elevation_data, bounds, scale_factor, vertical_s
                 segment_points_3d = np.array(segment_points_3d)
 
                 # Create road strip for this segment
-                road_mesh = create_road_strip(segment_points_3d, width=1.0 * size_scale)
+                road_mesh = create_road_strip(
+                    segment_points_3d,
+                    width=1.0 * size_scale,
+                    thickness=road_thickness
+                )
 
                 meshes.append({
                     'type': 'road',
@@ -1137,7 +1212,11 @@ def generate_road_meshes(roads, elevation_data, bounds, scale_factor, vertical_s
             points_xyz = np.array(points_xyz)
 
             # Create road as line with width
-            road_mesh = create_road_strip(points_xyz, width=1.0 * size_scale)
+            road_mesh = create_road_strip(
+                points_xyz,
+                width=1.0 * size_scale,
+                thickness=road_thickness
+            )
 
             meshes.append({
                 'type': 'road',
@@ -1173,6 +1252,9 @@ def generate_water_meshes(water_features, elevation_data, bounds, scale_factor, 
     avg_lat = elev_params['avg_lat']
     size_scale = elev_params.get('size_scale', 1.0)
 
+    water_relief = max(0.6 * size_scale, 0.5 * size_scale)
+    water_thickness = max(1.2 * size_scale, 2.0 * water_relief)
+
     for water in water_features[:50]:  # Limit water features
         coords = water['coordinates']
         if len(coords) < 3:
@@ -1201,7 +1283,7 @@ def generate_water_meshes(water_features, elevation_data, bounds, scale_factor, 
         # Normalize the water level
         water_y = ((avg_water_elev - min_elev) / elev_range) * 20.0 * size_scale * vertical_scale
         # Add offset to lift water above terrain surface for visibility
-        water_y = max(0.5 * size_scale, water_y + 0.5 * size_scale)
+        water_y = max(0.7 * size_scale, water_y + water_relief)
 
         # Convert all coordinates to model space
         points_xz = []  # (x, z) for clipping
@@ -1234,7 +1316,7 @@ def generate_water_meshes(water_features, elevation_data, bounds, scale_factor, 
             continue
 
         # Create solid water body with thickness for 3D printing
-        water_mesh = create_solid_polygon(points, thickness=0.5 * size_scale)
+        water_mesh = create_solid_polygon(points, thickness=water_thickness)
 
         meshes.append({
             'type': 'water',
@@ -1267,6 +1349,8 @@ def generate_gpx_track_mesh(gpx_tracks, elevation_data, bounds, scale_factor, ve
     elev_range = elev_params['elev_range']
     avg_lat = elev_params['avg_lat']
     size_scale = elev_params.get('size_scale', 1.0)
+    gpx_relief = max(0.8 * size_scale, 0.3 * size_scale)
+    gpx_thickness = max(1.2 * size_scale, 2.0 * gpx_relief)
 
     # Convert all track points to model space first
     all_points_xz = []
@@ -1299,7 +1383,7 @@ def generate_gpx_track_mesh(gpx_tracks, elevation_data, bounds, scale_factor, ve
             z = (bounds['north'] - lat) * scale_factor
 
             # Elevation - sit slightly above terrain to be visible (roads are at +0.2, GPX at +0.3)
-            y = ((raw_elev - min_elev) / elev_range) * 20.0 * size_scale * vertical_scale + 0.3 * size_scale
+            y = ((raw_elev - min_elev) / elev_range) * 20.0 * size_scale * vertical_scale + gpx_relief
 
             all_points_xz.append((x, z))
             all_points_xyz.append([x, y, z])
@@ -1312,7 +1396,7 @@ def generate_gpx_track_mesh(gpx_tracks, elevation_data, bounds, scale_factor, ve
     points = np.array(all_points_xyz)
 
     # Create track as a 3D-printable strip (wider and thicker than roads)
-    track_mesh = create_road_strip(points, width=2.5 * size_scale, thickness=0.5 * size_scale)
+    track_mesh = create_road_strip(points, width=2.5 * size_scale, thickness=gpx_thickness)
 
     return {
         'type': 'gpx_track',

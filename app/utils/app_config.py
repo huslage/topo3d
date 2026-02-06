@@ -75,4 +75,4 @@ def get_terrain_max_samples(preview_mode):
     """Maximum terrain sample points allowed for Cesium source."""
     if preview_mode:
         return max(1, parse_env_int("TOPO3D_CESIUM_TERRAIN_MAX_SAMPLES_PREVIEW", 20000))
-    return max(1, parse_env_int("TOPO3D_CESIUM_TERRAIN_MAX_SAMPLES_FINAL", 60000))
+    return max(1, parse_env_int("TOPO3D_CESIUM_TERRAIN_MAX_SAMPLES_FINAL", 300000))

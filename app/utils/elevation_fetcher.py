@@ -19,6 +19,22 @@ AWS_TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{
 ELEVATION_CACHE_MAX_AGE_SECONDS = int(os.getenv("TOPO3D_ELEVATION_CACHE_TTL_SECONDS", str(24 * 3600)))
 
 
+def _cesium_quality_insufficient(payload, preview_mode):
+    """Return True when Cesium terrain appears too coarse for final-quality output."""
+    if preview_mode:
+        return False
+    diagnostics = payload.get("diagnostics") or {}
+    requested = diagnostics.get("requested_zoom")
+    used = diagnostics.get("highest_zoom_used")
+    misses = diagnostics.get("tile_misses", 0)
+    if requested is None or used is None:
+        return False
+    # If we fell back 2+ zoom levels and missed many tiles, terrain will be visibly faceted.
+    if (int(requested) - int(used)) >= 2 and int(misses) >= 32:
+        return True
+    return False
+
+
 def fetch_elevation_data(north, south, east, west, resolution=200, source_mode=None, preview_mode=False):
     """Fetch elevation data for a bounding box.
 
@@ -42,7 +58,7 @@ def fetch_elevation_data(north, south, east, west, resolution=200, source_mode=N
         "resolution": int(resolution),
         "mode": str(source_mode or get_default_terrain_source_mode()),
         "preview_mode": bool(preview_mode),
-        "version": 2,
+        "version": 12,
     }
     cached = load_json_cache("elevation", cache_key, max_age_seconds=ELEVATION_CACHE_MAX_AGE_SECONDS)
     if cached is not None:
@@ -62,6 +78,12 @@ def fetch_elevation_data(north, south, east, west, resolution=200, source_mode=N
         payload = fetch_cesium_terrain_data(
             north, south, east, west, resolution, preview_mode=preview_mode
         )
+        if _cesium_quality_insufficient(payload, preview_mode):
+            print("[WARN] Cesium terrain quality insufficient for final output, falling back to default DEM")
+            payload = fetch_default_elevation_data(north, south, east, west, resolution)
+            payload.setdefault("source", "default")
+            payload["fallback_reason"] = "Cesium terrain LOD too coarse for final output"
+            payload["fallback_from"] = "cesium"
         payload.setdefault("source", "cesium")
         save_json_cache("elevation", cache_key, payload)
         return payload
@@ -70,6 +92,12 @@ def fetch_elevation_data(north, south, east, west, resolution=200, source_mode=N
         payload = fetch_cesium_terrain_data(
             north, south, east, west, resolution, preview_mode=preview_mode
         )
+        if _cesium_quality_insufficient(payload, preview_mode):
+            print("[WARN] Cesium terrain quality insufficient for final output, falling back to default DEM")
+            payload = fetch_default_elevation_data(north, south, east, west, resolution)
+            payload.setdefault("source", "default")
+            payload["fallback_reason"] = "Cesium terrain LOD too coarse for final output"
+            payload["fallback_from"] = "cesium"
         payload.setdefault("source", "cesium")
         return payload
     except Exception as exc:

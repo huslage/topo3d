@@ -43,11 +43,37 @@ def _parse_cesium_response(data, original_query):
     features = data.get("features")
     if isinstance(features, list) and features:
         first = features[0]
+        props = first.get("properties", {}) if isinstance(first, dict) else {}
         geometry = first.get("geometry", {}) if isinstance(first, dict) else {}
         coords = geometry.get("coordinates") if isinstance(geometry, dict) else None
         if isinstance(coords, (list, tuple)) and len(coords) >= 2:
             lon, lat = float(coords[0]), float(coords[1])
-            label = first.get("place_name") or first.get("name") or original_query
+            label = (
+                first.get("place_name")
+                or first.get("name")
+                or props.get("label")
+                or props.get("name")
+                or original_query
+            )
+            return {
+                "address": label,
+                "lat": lat,
+                "lon": lon,
+                "raw": data,
+            }
+
+        bbox = first.get("bbox") if isinstance(first, dict) else None
+        if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
+            west, south, east, north = map(float, bbox[:4])
+            lon = (west + east) / 2.0
+            lat = (south + north) / 2.0
+            label = (
+                first.get("place_name")
+                or first.get("name")
+                or props.get("label")
+                or props.get("name")
+                or original_query
+            )
             return {
                 "address": label,
                 "lat": lat,
@@ -81,8 +107,6 @@ def _geocode_with_cesium(address, timeout):
         timeout = get_cesium_timeout_seconds()
 
     endpoint_candidates = [
-        ("https://api.cesium.com/v1/geocode", {"text": address, "access_token": token}),
-        ("https://api.cesium.com/v1/geocode", {"q": address, "access_token": token}),
         ("https://api.cesium.com/v1/geocode/search", {"text": address, "access_token": token}),
         ("https://api.cesium.com/v1/geocode/search", {"q": address, "access_token": token}),
     ]
@@ -91,8 +115,8 @@ def _geocode_with_cesium(address, timeout):
     for url, params in endpoint_candidates:
         try:
             response = requests.get(url, params=params, timeout=timeout)
-            if response.status_code == 404:
-                last_error = "Endpoint not found"
+            if response.status_code in {404, 405}:
+                last_error = "Endpoint not available"
                 continue
             response.raise_for_status()
             data = response.json()
