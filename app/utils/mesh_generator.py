@@ -14,6 +14,11 @@ _ELEVATION_PREP_CACHE = {}
 _ELEVATION_SAMPLE_CACHE_LIMIT = 50000
 
 
+def _compose_feature_key(feature_type, feature_id):
+    """Build stable object key used by UI edit intents."""
+    return f"{feature_type}:{feature_id}"
+
+
 def _prepare_elevation_normalization(elevation_grid, source="default"):
     """Compute robust elevation normalization to avoid outlier-flattened terrain."""
     finite = np.asarray(elevation_grid, dtype=np.float64)
@@ -324,6 +329,32 @@ def generate_mesh(elevation_data, features, options):
                 shape_clipper
             )
 
+        excluded_feature_keys = {
+            str(feature_key)
+            for feature_key in options.get('excluded_feature_keys', [])
+            if feature_key is not None
+        }
+
+        filtered_feature_meshes = []
+        for feature in feature_meshes:
+            if not isinstance(feature, dict):
+                continue
+            feature_type = feature.get('type', 'feature')
+            feature_id = feature.get('id', 'unknown')
+            feature_key = feature.get('feature_key') or _compose_feature_key(feature_type, feature_id)
+            feature['feature_key'] = feature_key
+            if feature_key in excluded_feature_keys:
+                continue
+            filtered_feature_meshes.append(feature)
+
+        feature_meshes = filtered_feature_meshes
+
+        if isinstance(gpx_track_mesh, dict):
+            gpx_track_mesh['feature_key'] = gpx_track_mesh.get(
+                'feature_key',
+                _compose_feature_key(gpx_track_mesh.get('type', 'gpx_track'), gpx_track_mesh.get('id', 'gpx_track'))
+            )
+
         feature_type_counts = {}
         for feature in feature_meshes:
             ftype = feature.get('type') if isinstance(feature, dict) else None
@@ -345,6 +376,7 @@ def generate_mesh(elevation_data, features, options):
                 'faces_count': len(terrain_mesh['faces']),
                 'features_count': len(feature_meshes),
                 'feature_type_counts': feature_type_counts,
+                'feature_counts_by_type': dict(feature_type_counts),
                 'building_source_used': building_source_used,
                 'terrain_source_used': terrain_source_used,
                 'fallback_reasons': fallback_reasons

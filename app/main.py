@@ -34,22 +34,33 @@ app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": get_cors_origins()}})
 
 # Configuration
-UPLOAD_FOLDER = '/app/uploads'
-EXPORT_FOLDER = '/app/exports'
+UPLOAD_FOLDER = os.getenv('TOPO3D_UPLOAD_FOLDER', '/app/uploads')
+EXPORT_FOLDER = os.getenv('TOPO3D_EXPORT_FOLDER', '/app/exports')
 ALLOWED_EXTENSIONS = {'gpx'}
 CLEANUP_MAX_AGE_SECONDS = int(os.getenv('TOPO3D_FILE_TTL_SECONDS', str(24 * 3600)))
 
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['EXPORT_FOLDER'] = EXPORT_FOLDER
 # Export requests include full mesh JSON and can exceed 16MB at final quality.
 # Keep configurable for environments with tighter limits.
 app.config['MAX_CONTENT_LENGTH'] = int(
     os.getenv('TOPO3D_MAX_CONTENT_LENGTH_MB', '256')
 ) * 1024 * 1024
 
-# Ensure directories exist
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(EXPORT_FOLDER, exist_ok=True)
+def ensure_writable_dir(path, fallback_name):
+    """Ensure directory exists, with fallback for read-only defaults in local dev/tests."""
+    try:
+        os.makedirs(path, exist_ok=True)
+        return path
+    except OSError:
+        fallback = os.path.join(os.getcwd(), fallback_name)
+        os.makedirs(fallback, exist_ok=True)
+        print(f"[WARN] Falling back to writable directory: {fallback}")
+        return fallback
+
+
+UPLOAD_FOLDER = ensure_writable_dir(UPLOAD_FOLDER, 'uploads')
+EXPORT_FOLDER = ensure_writable_dir(EXPORT_FOLDER, 'exports')
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['EXPORT_FOLDER'] = EXPORT_FOLDER
 
 
 def cleanup_old_files(directory, max_age_seconds):
@@ -321,6 +332,11 @@ def generate_model():
         options.setdefault('building_mesh_target_ratio_preview', 0.2)
         options.setdefault('building_mesh_target_ratio_final', 0.4)
         options['preview_mode'] = bool(preview_mode)
+        excluded_feature_keys = options.get('excluded_feature_keys', [])
+        if isinstance(excluded_feature_keys, (list, tuple, set)):
+            options['excluded_feature_keys'] = [str(item) for item in excluded_feature_keys if item is not None]
+        else:
+            options['excluded_feature_keys'] = []
 
         if not elevation:
             return jsonify({'error': 'No elevation data provided'}), 400
