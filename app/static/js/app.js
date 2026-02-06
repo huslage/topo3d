@@ -45,6 +45,10 @@ function setMode(mode) {
         const active = tab.dataset.mode === mode;
         tab.classList.toggle("active", active);
     });
+
+    if (sceneController?.refreshViewport) {
+        sceneController.refreshViewport();
+    }
 }
 
 const history = new HistoryStack(100);

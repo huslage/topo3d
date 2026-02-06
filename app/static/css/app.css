@@ -492,7 +492,11 @@ body[data-mode="setup"] #export-mode-panel {
 }
 
 body[data-mode="setup"] .panel-right {
-    opacity: 0.95;
+    display: none;
+}
+
+body[data-mode="setup"] .workspace-grid {
+    grid-template-columns: 330px 1fr;
 }
 
 body[data-mode="edit"] .panel-left {

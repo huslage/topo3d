@@ -7,6 +7,9 @@ export function createSceneController({ state, showStatus, onSelectionChanged, o
     let controls;
     let canvasContainer;
     let selectionBox;
+    let resizeObserver = null;
+    let viewportSyncFrame = 0;
+    const viewportSize = { width: 0, height: 0 };
 
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
@@ -25,17 +28,18 @@ export function createSceneController({ state, showStatus, onSelectionChanged, o
         scene.background = new THREE.Color(0x111715);
         scene.fog = new THREE.Fog(0x111715, 450, 2200);
 
-        camera = new THREE.PerspectiveCamera(
-            58,
-            canvasContainer.clientWidth / canvasContainer.clientHeight,
-            0.1,
-            6000
-        );
+        const initialWidth = Math.max(1, Math.floor(canvasContainer.clientWidth || 1));
+        const initialHeight = Math.max(1, Math.floor(canvasContainer.clientHeight || 1));
+        camera = new THREE.PerspectiveCamera(58, initialWidth / initialHeight, 0.1, 6000);
         camera.position.set(210, 210, 210);
 
         renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(canvasContainer.clientWidth, canvasContainer.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        renderer.setSize(initialWidth, initialHeight, false);
         renderer.shadowMap.enabled = true;
+        renderer.domElement.style.display = "block";
+        renderer.domElement.style.width = "100%";
+        renderer.domElement.style.height = "100%";
         canvasContainer.appendChild(renderer.domElement);
 
         controls = new THREE.OrbitControls(camera, renderer.domElement);
@@ -54,10 +58,17 @@ export function createSceneController({ state, showStatus, onSelectionChanged, o
         scene.add(gridHelper);
 
         window.addEventListener("resize", onWindowResize);
+        if (typeof ResizeObserver === "function") {
+            resizeObserver = new ResizeObserver(() => {
+                requestViewportSync();
+            });
+            resizeObserver.observe(canvasContainer);
+        }
         renderer.domElement.addEventListener("pointerdown", onPointerDown, true);
         document.addEventListener("pointermove", onPointerMove, true);
         document.addEventListener("pointerup", onPointerUp, true);
 
+        requestViewportSync();
         animate();
     }
 
@@ -73,12 +84,45 @@ export function createSceneController({ state, showStatus, onSelectionChanged, o
     }
 
     function onWindowResize() {
-        if (!canvasContainer || !camera || !renderer) {
-            return;
+        if (renderer) {
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         }
-        camera.aspect = canvasContainer.clientWidth / canvasContainer.clientHeight;
+        requestViewportSync();
+    }
+
+    function syncViewportSize() {
+        if (!canvasContainer || !camera || !renderer) {
+            return false;
+        }
+
+        const width = Math.max(1, Math.floor(canvasContainer.clientWidth || 1));
+        const height = Math.max(1, Math.floor(canvasContainer.clientHeight || 1));
+        if (width === viewportSize.width && height === viewportSize.height) {
+            return false;
+        }
+
+        viewportSize.width = width;
+        viewportSize.height = height;
+        camera.aspect = width / height;
         camera.updateProjectionMatrix();
-        renderer.setSize(canvasContainer.clientWidth, canvasContainer.clientHeight);
+        renderer.setSize(width, height, false);
+        return true;
+    }
+
+    function requestViewportSync() {
+        if (viewportSyncFrame) {
+            cancelAnimationFrame(viewportSyncFrame);
+        }
+
+        viewportSyncFrame = requestAnimationFrame(() => {
+            viewportSyncFrame = requestAnimationFrame(() => {
+                viewportSyncFrame = 0;
+                const didResize = syncViewportSize();
+                if (didResize) {
+                    forceRenderRefresh();
+                }
+            });
+        });
     }
 
     function clearSceneObjects() {
@@ -907,6 +951,7 @@ export function createSceneController({ state, showStatus, onSelectionChanged, o
         init,
         renderMesh,
         centerCamera,
+        refreshViewport: requestViewportSync,
         setSelection,
         toggleSelection,
         clearSelection,
