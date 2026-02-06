@@ -30,11 +30,27 @@ if "scipy" not in sys.modules:
         def __call__(self, lats, lons):
             return np.zeros((len(lats), len(lons)))
 
+    class _FakeLinearInterpolator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __call__(self, *_args, **_kwargs):
+            return np.nan
+
+    class _FakeNearestInterpolator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __call__(self, *_args, **_kwargs):
+            return 0.0
+
     class _FakeDelaunay:
         def __init__(self, *_args, **_kwargs):
             self.simplices = np.array([])
 
     fake_interpolate.RectBivariateSpline = _FakeRectBivariateSpline
+    fake_interpolate.LinearNDInterpolator = _FakeLinearInterpolator
+    fake_interpolate.NearestNDInterpolator = _FakeNearestInterpolator
     fake_ndimage.gaussian_filter = lambda arr, sigma=0: arr
     fake_spatial.Delaunay = _FakeDelaunay
     fake_scipy.interpolate = fake_interpolate

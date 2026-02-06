@@ -10,6 +10,11 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
+# Ensure imports work when tests run from repository root.
+APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
+
 # `generate_mesh` does not use `stl`, but mesh_generator imports it at module load.
 # Provide a minimal stub for local environments without numpy-stl.
 try:
