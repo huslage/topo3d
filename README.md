@@ -75,62 +75,55 @@ Optional environment variables:
 
 ## How to Use
 
-### 1. Upload a GPX File
+### Setup Mode (Guided)
 
-- Click "Choose GPX File" and select your .gpx file
-- The app will automatically extract:
-  - Track points and routes
-  - Waypoints
-  - Geographic bounds
+1. Upload a GPX file.
+2. Optionally pin an address (or Google Maps URL) to highlight.
+3. Set only core options first:
+   - Model width
+   - Include base
+4. Click **Generate 3D Model**.
+5. Expand **Advanced Settings** only when needed:
+   - Vertical scale
+   - Base height
+   - Boundary padding
+   - Model shape
+   - Final quality generation
 
-### 2. Configure Map Features
+### Edit Mode (Batch First)
 
-Select which features to include:
-- ✅ **Roads**: Highways, streets, paths
-- ✅ **Water Bodies**: Lakes, rivers, streams
-- ✅ **Buildings**: All structures with height data
-- ⬜ **Railways**: Train tracks and stations
+Use the right editor panel for fast refinements:
+- Search objects by name/type
+- Filter by type chips (terrain, buildings, roads, water, GPX, markers, labels)
+- Batch actions:
+  - Select Visible
+  - Hide Selected
+  - Delete Selected
+  - Show All
+- Box-select from the explicit **Box Select** toggle
+- Set building colors inline per row
+- Add labels directly from the editor panel
 
-### 3. Adjust Model Options
+### Undo / Redo
 
-Fine-tune your model:
-- **Vertical Scale** (0.5x - 5x): Exaggerate elevation changes
-- **Model Width** (50mm - 500mm): Final print size
-- **Base Height** (0mm - 50mm): Platform height for printing
-- **Include Base**: Add solid base for 3D printing stability
+- Undo: `Ctrl/Cmd + Z`
+- Redo: `Ctrl/Cmd + Shift + Z`
+- Delete selected: `Delete`
+- Select visible: `A`
 
-### 4. Generate the Model
+### Persistence Behavior Across Regenerate
 
-Use **"Generate Preview"** for fast iteration, then **"Generate Final Quality"** before export.
+Topo3D stores edit intent in local storage (`topo3d.session.v1`) and reapplies it after each regenerate:
+- Deleted object keys
+- Hidden object keys
+- Building color overrides
+- Active filters + search query
 
-### 5. Interact with the Model
+When a saved key no longer exists after regenerate (for example, source IDs changed), Topo3D skips it and reports unmatched counts in status.
 
-**3D Viewer Controls:**
-- **Rotate**: Left click + drag
-- **Pan**: Right click + drag
-- **Zoom**: Scroll wheel
-- **Select**: Click on any object
+### Export Mode
 
-**Object Management:**
-- View all objects in the sidebar list
-- Click to select/highlight objects
-- Click "Delete" to remove unwanted features
-
-### 6. Add Labels (Optional)
-
-1. Enter text in the "Add Label" field
-2. Click "Add"
-3. Position labels by selecting them in the 3D viewer
-
-### 7. Highlight an Address (Optional)
-
-1. Enter an address in the "Highlight Address" field
-2. Click "Geocode Address"
-3. A red marker will appear at the location
-
-### 8. Export to STL
-
-Click **"Export to STL"** to download your model for 3D printing!
+Use **Export 3MF** to download your current scene. Deleted objects are excluded; hidden objects are still exported unless deleted.
 
 ## Architecture
 
